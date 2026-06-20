@@ -3,6 +3,7 @@ IRIS v2.0 — Mixin Celular (Poco X7 via ADB + Proteção de Dispositivos)
 Métodos de controle ADB e segurança do celular extraídos de acoes.py.
 """
 import os, subprocess, threading, time, logging
+from ..tipos import Pergunta
 from pathlib import Path
 import datetime
 
@@ -187,12 +188,21 @@ class CelularMixin:
         self._reg("Digitou no celular: " + texto[:30])
         return "Texto digitado no Poco X7!"
 
-    def celular_reiniciar(self):
+    def celular_reiniciar(self) -> Pergunta:
+        _SIM = {"sim", "s", "confirmo", "confirma", "pode"}
+        return Pergunta(
+            "Confirma reinício do Poco X7? O celular ficará ~30s offline. (sim / não)",
+            lambda r: self._celular_reiniciar_exec()
+                      if r.strip().lower() in _SIM
+                      else "Reinício cancelado."
+        )
+
+    def _celular_reiniciar_exec(self) -> str:
         if not self._poco_ok():
             return "Poco X7 não conectado!"
         self._adb("reboot")
         self._reg("Reiniciou o celular")
-        return "Poco X7 reiniciando..."
+        return "Poco X7 reiniciando... aguarde ~30s"
 
     def celular_ligar_wifi(self, ligar=True):
         if not self._poco_ok():

@@ -319,4 +319,22 @@ def criar_roteador_smarthome(ac) -> Roteador:
             return ac.historico_sensores_png()
         return "Módulo de gráficos não inicializado"
 
+    @r.rota(contem("estatisticas sensores", "estatísticas sensores",
+                   "stats sensores", "resumo sensores"), prioridade=7)
+    def _stats_sens(p, m):
+        if hasattr(ac, "historico_sensores_stats"):
+            horas = extrair_numeros(p)
+            return ac.historico_sensores_stats(horas[0] if horas else 24.0)
+        return "Módulo de histórico não inicializado"
+
+    # ── Cadastro interativo de dispositivo ──
+    @r.rota(contem("cadastrar dispositivo", "novo dispositivo",
+                   "adicionar dispositivo", "registrar dispositivo"), prioridade=9)
+    def _novo_disp(p, m): return ac.dispositivo_novo_interativo()
+
+    # ── Reiniciar celular (com confirmação) ──
+    @r.rota(contem("reinicia celular", "reiniciar celular", "reboot celular",
+                   "reinicia o poco", "reiniciar o poco"), prioridade=8)
+    def _reboot_cel(p, m): return ac.celular_reiniciar()
+
     return r

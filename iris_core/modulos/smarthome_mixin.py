@@ -2,6 +2,7 @@
 IRIS v2.0 — Mixin Smart Home
 Métodos de controle da casa integrados ao Acoes via herança múltipla.
 """
+from ..tipos import Pergunta
 
 
 class SmartHomeMixin:
@@ -83,6 +84,23 @@ class SmartHomeMixin:
             return "Redes já estão otimizadas"
         return "Roteamento otimizado:\n" + "\n".join(f"  {m}" for m in mudancas)
 
+    def dispositivo_novo_interativo(self) -> Pergunta:
+        """Cadastra dispositivo em 2 etapas: pergunta nome, depois tipo."""
+        self._reg("Cadastro interativo de dispositivo")
+        _TIPOS = ("luz", "som", "tv", "tomada", "sensor", "climatizacao")
+        return Pergunta(
+            "Como vai se chamar o novo dispositivo?\n"
+            "(ex: Ventilador Sala, TV Quarto, Lâmpada Entrada...)",
+            lambda nome: Pergunta(
+                f"Que tipo é '{nome.strip()}'?\n"
+                "Escolha: luz / som / tv / tomada / sensor / climatizacao",
+                lambda tipo: self.smarthome_adicionar(
+                    nome.strip(),
+                    tipo.strip().split()[0] if tipo.strip().split()[0] in _TIPOS else "tomada"
+                )
+            )
+        )
+
     # ══════════════════════════════════════════════════════════════
     #  BIOMETRIA E INTERAÇÃO HUMANA
     # ══════════════════════════════════════════════════════════════
@@ -135,8 +153,17 @@ class SmartHomeMixin:
     def seg_emergencia_status(self) -> str:
         return self.seguranca.emergencia.status()
 
-    def seg_cortar_tudo(self) -> str:
-        self._reg("EMERGÊNCIA: corte gás+água")
+    def seg_cortar_tudo(self) -> Pergunta:
+        self._reg("EMERGÊNCIA: solicitado corte gás+água")
+        _SIM = {"sim", "s", "confirmo", "confirma", "pode", "pode sim", "isso"}
+        return Pergunta(
+            "⚠️ EMERGÊNCIA — Confirma corte imediato de GÁS e ÁGUA? (sim / não)",
+            lambda r: self._seg_cortar_exec()
+                      if r.strip().lower() in _SIM
+                      else "Corte cancelado. Válvulas continuam abertas."
+        )
+
+    def _seg_cortar_exec(self) -> str:
         resultado = self.seguranca.emergencia.cortar_tudo()
         self.notificar("EMERGÊNCIA", resultado)
         return resultado

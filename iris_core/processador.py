@@ -92,19 +92,40 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
         self.ac = acoes
         self.mon = mon
         self.voz = voz
-        self._pendente = None  # v11: ação aguardando confirmação (ex: apagar pasta)
+        self._pendente = None  # ação aguardando confirmação ou resposta do usuário
         self._roteador_smarthome = criar_roteador_smarthome(acoes)
+
+    def _tratar_resultado(self, resultado):
+        """Se o resultado for uma Pergunta, guarda o callback e retorna o texto."""
+        from .tipos import Pergunta
+        if isinstance(resultado, Pergunta):
+            self._pendente = ("callback", resultado.callback)
+            return resultado.texto
+        return resultado
 
     def processar(self, prompt):
         p = prompt.lower().strip()
         if not p:
             return "Diga alguma coisa!"
 
-        # ── CONFIRMAÇÃO PENDENTE (v11) — segurança em ações destrutivas ──
+        # ── CONFIRMAÇÃO / PERGUNTA PENDENTE ──
         if self._pendente:
-            acao, dado = self._pendente
+            acao, *resto = self._pendente
             self._pendente = None
+
+            # Callback genérico: qualquer método pode devolver Pergunta(texto, fn)
+            if acao == "callback":
+                fn = resto[0]
+                try:
+                    resultado = fn(p)
+                    # a resposta pode gerar outra Pergunta (fluxo encadeado)
+                    return self._tratar_resultado(resultado)
+                except Exception as e:
+                    return f"Erro ao executar: {e}"
+
+            # Confirmações binárias (sim/não) pré-existentes
             if p in ("sim", "s", "confirmo", "confirma", "pode", "pode sim", "isso"):
+                dado = resto[0] if resto else None
                 if acao == "apagar_pasta":
                     return self.ac.apagar_pasta_confirmada(dado)
                 if acao == "apagar_arquivo":
@@ -116,8 +137,6 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
                 if acao == "restaurar_iris":
                     return self.ac.guardia_restaurar(dado)
                 if acao == "agente_visual":
-                    # dispara o agente em thread pra não travar a interface;
-                    # o resultado volta pela ia_callback (aparece no chat e na voz)
                     import threading as _th
                     def _rodar():
                         r = self.ac.agente_visual(dado, max_passos=6)
@@ -195,7 +214,7 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
         # ── SMART HOME / BIO / SEGURANÇA / LOGÍSTICA / AGENTE ──
         _r = self._roteador_smarthome.despachar(p)
         if _r is not None:
-            return _r
+            return self._tratar_resultado(_r)
 
         # ── Adicionar dispositivo (precisa de parse especial) ──
         if any(p.startswith(x) for x in ["adiciona dispositivo", "novo dispositivo",

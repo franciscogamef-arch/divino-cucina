@@ -22,6 +22,7 @@ from .sensores_historico import SeriesTempo, ColetorSensores, GraficoASCII
 from .modulos.smarthome_mixin import SmartHomeMixin
 from .modulos.github_mixin import GithubMixin
 from .modulos.celular_mixin import CelularMixin
+from .tipos import Pergunta  # re-exportado; use `from iris_core.tipos import Pergunta` nos mixins
 
 _FALLBACK_HTML = """<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
