@@ -18,12 +18,47 @@ from .biometria import BiometriaVoz, AnalisadorExpressao, ControladorGestos, Sin
 from .seguranca_casa import CentralSeguranca
 from .logistica import CentralLogistica
 from .agente_execucao import AgenteExecucao, ExecutorCodigo
+from .sensores_historico import SeriesTempo, ColetorSensores, GraficoASCII
+from .modulos.smarthome_mixin import SmartHomeMixin
+from .modulos.github_mixin import GithubMixin
+from .modulos.celular_mixin import CelularMixin
+
+_FALLBACK_HTML = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>IRIS</title><style>
+body{background:#0a0e1a;color:#cde;font-family:sans-serif;margin:0;padding:16px}
+h1{color:#00c8f5}button{background:#13243a;color:#9df;border:1px solid #00c8f5;
+border-radius:10px;padding:14px;margin:5px;font-size:15px;width:46%}
+button:active{background:#00c8f5;color:#000}
+#out{margin-top:14px;padding:12px;background:#0d1424;border-radius:10px;
+white-space:pre-wrap;min-height:60px}
+input{width:70%;padding:12px;border-radius:10px;border:1px solid #00c8f5;
+background:#0d1424;color:#cde;font-size:15px}
+</style></head><body><h1>IRIS — controle</h1>
+<div id=devs></div>
+<div style="margin-top:10px">
+<input id=txt placeholder="comando...">
+<button style="width:25%" onclick="cmd(document.getElementById('txt').value)">enviar</button>
+</div><div id=out>Carregando...</div>
+<script>
+function cmd(c){fetch('/cmd?c='+encodeURIComponent(c)).then(r=>r.text())
+  .then(t=>{document.getElementById('out').textContent=t});}
+function refresh(){fetch('/api/casa').then(r=>r.json()).then(d=>{
+  let h='';d.dispositivos.forEach(dv=>{
+    h+='<button onclick="cmd(\''+(dv.ligado?'desliga ':'liga ')+dv.nome+'\')">'
+      +dv.nome+' '+(dv.ligado?'ON':'OFF')+'</button>';});
+  document.getElementById('devs').innerHTML=h;
+  if(d.alertas&&d.alertas.length)
+    document.getElementById('out').textContent='⚠️ '+d.alertas.join(' | ');
+});}
+refresh();setInterval(refresh,10000);
+</script></body></html>"""
 
 
 # ══════════════════════════════════════════════════════════════
 #  AÇÕES — tudo que a IRIS pode fazer no sistema
 # ══════════════════════════════════════════════════════════════
-class Acoes:
+class Acoes(SmartHomeMixin, GithubMixin, CelularMixin):
     def __init__(self, usuario, memoria, ia):
         self.usuario = usuario
         self.mem = memoria
@@ -52,6 +87,10 @@ class Acoes:
         self.logistica = CentralLogistica(ia, self.smarthome, notificar_callback=self._notif_logistica)
         self.agente = AgenteExecucao(ia, self)
         self._registrar_tools_smarthome()
+        # histórico de sensores e coletor automático
+        self._series_tempo = SeriesTempo()
+        self._coletor = ColetorSensores(self._series_tempo, self.smarthome)
+        self._coletor.iniciar()
         threading.Thread(target=self._checar_lembretes, daemon=True).start()
         self._iniciar_arduino()
 
@@ -1118,345 +1157,6 @@ void loop() {
             return "Erro ao restaurar: " + str(e)
 
     # ══════════════════════════════════════════
-    #  GITHUB (v15) — a IRIS estuda código do mundo
-    #  Regra de ouro: ela BAIXA e ESTUDA, mas NUNCA
-    #  executa nem funde código da internet sozinha.
-    # ══════════════════════════════════════════
-    def github_buscar(self, tema):
-        """Busca repositórios no GitHub por tema, ordenados por estrelas."""
-        try:
-            r = requests.get(
-                "https://api.github.com/search/repositories",
-                params={"q": tema, "sort": "stars", "per_page": 5},
-                headers={"Accept": "application/vnd.github+json"},
-                timeout=10).json()
-            itens = r.get("items", [])
-            if not itens:
-                return "Nada encontrado no GitHub para '" + tema + "'"
-            linhas = ["GITHUB — top repositórios para '" + tema + "':"]
-            for it in itens:
-                linhas.append("- " + it["full_name"] + " (" +
-                              str(it["stargazers_count"]) + " estrelas)\n    " +
-                              (it.get("description") or "sem descrição")[:90])
-            linhas.append("\nPara estudar um: baixa github " + itens[0]["full_name"])
-            self._reg("Buscou GitHub: " + tema)
-            return "\n".join(linhas)
-        except Exception as e:
-            return "Erro na busca GitHub: " + str(e)
-
-    def github_baixar(self, repo):
-        """Baixa um repositório (user/repo) para ~/IRIS_Projetos/GitHub/."""
-        repo = repo.strip().replace("https://github.com/", "").strip("/")
-        if repo.count("/") != 1:
-            return "Formato: baixa github usuario/repositorio"
-        destino_base = Path.home() / "IRIS_Projetos" / "GitHub"
-        destino_base.mkdir(parents=True, exist_ok=True)
-        nome = repo.split("/")[1]
-        destino = destino_base / nome
-        try:
-            if shutil.which("git"):
-                if destino.exists():
-                    shutil.rmtree(str(destino), ignore_errors=True)
-                r = subprocess.run(["git", "clone", "--depth", "1",
-                                    "https://github.com/" + repo, str(destino)],
-                                   capture_output=True, text=True, timeout=120)
-                if r.returncode != 0:
-                    return "Erro no clone: " + (r.stderr or "")[-200:]
-            else:
-                # sem git: baixa o zip
-                import zipfile, io
-                conteudo = None
-                for branch in ("main", "master"):
-                    resp = requests.get("https://codeload.github.com/" + repo +
-                                        "/zip/refs/heads/" + branch, timeout=60)
-                    if resp.status_code == 200:
-                        conteudo = resp.content
-                        break
-                if not conteudo:
-                    return "Não consegui baixar (repo privado ou inexistente?)"
-                with zipfile.ZipFile(io.BytesIO(conteudo)) as z:
-                    z.extractall(str(destino_base))
-                # pasta extraída vem como nome-branch
-                for d in destino_base.iterdir():
-                    if d.is_dir() and d.name.startswith(nome + "-"):
-                        if destino.exists():
-                            shutil.rmtree(str(destino), ignore_errors=True)
-                        d.rename(destino)
-                        break
-            arqs = list(destino.rglob("*"))
-            n_py = sum(1 for f in arqs if f.suffix == ".py")
-            n_ino = sum(1 for f in arqs if f.suffix == ".ino")
-            self._reg("Baixou GitHub: " + repo)
-            return ("Baixado: " + repo + " -> ~/IRIS_Projetos/GitHub/" + nome +
-                    "\n" + str(len(arqs)) + " arquivos (" + str(n_py) + " .py, " +
-                    str(n_ino) + " .ino)" +
-                    "\nIMPORTANTE: eu NÃO executo nada daqui sozinha. "
-                    "Para eu analisar: estuda github " + nome)
-        except Exception as e:
-            return "Erro ao baixar: " + str(e)
-
-    def github_estudar(self, nome):
-        """Lê o README e os principais arquivos e extrai o que dá pra aprender."""
-        base = Path.home() / "IRIS_Projetos" / "GitHub"
-        pasta = base / nome.strip()
-        if not pasta.exists():
-            cands = [d for d in base.iterdir() if d.is_dir() and
-                     nome.lower() in d.name.lower()] if base.exists() else []
-            if not cands:
-                return "Não achei '" + nome + "' baixado. Primeiro: baixa github usuario/repo"
-            pasta = cands[0]
-        material = []
-        # README primeiro
-        for rd in ["README.md", "readme.md", "README.txt", "README"]:
-            f = pasta / rd
-            if f.exists():
-                material.append("=== README ===\n" + f.read_text(
-                    encoding="utf-8", errors="ignore")[:3000])
-                break
-        # principais arquivos de código (menores primeiro, até ~6)
-        codigos = sorted([f for f in pasta.rglob("*")
-                          if f.suffix in (".py", ".ino", ".c", ".cpp", ".v") and
-                          f.is_file() and f.stat().st_size < 30000],
-                         key=lambda f: f.stat().st_size)[:6]
-        for f in codigos:
-            material.append("=== " + f.name + " ===\n" +
-                            f.read_text(encoding="utf-8", errors="ignore")[:2000])
-        if not material:
-            return "Pasta vazia ou sem arquivos legíveis."
-        r = self.ia.gemini_complexo(
-            "Francisco baixou este repositório do GitHub. Analise e responda em "
-            "português:\n1) O que o projeto faz\n2) As 3 técnicas/ideias mais úteis "
-            "que ele pode APRENDER e aplicar nos projetos dele (IRIS, Arduino, FPGA, "
-            "computação ternária)\n3) Algum risco ou cuidado no código\n"
-            "Seja concreto e prático.\n\n" + "\n\n".join(material)[:12000])
-        self._reg("Estudou GitHub: " + pasta.name)
-        return ("ESTUDO DO REPOSITÓRIO " + pasta.name + ":\n" + r[:1200] +
-                "\n\n(Lembra: eu estudo e proponho — quem decide aplicar é você!)")
-
-    def forjar_de_estudo(self, ideia):
-        """Pega o que estudou do GitHub + as ideias do Francisco e FORJA um
-        plugin/módulo NOVO — mas sempre como rascunho seguro para revisão.
-        É o caminho do 'usar o código bom': transformar em habilidade,
-        sem fundir cru e sem se quebrar."""
-        # reúne o material já baixado do GitHub
-        base = Path.home() / "IRIS_Projetos" / "GitHub"
-        amostras = []
-        if base.exists():
-            for f in list(base.rglob("*.py"))[:8] + list(base.rglob("*.ino"))[:4]:
-                if f.is_file() and f.stat().st_size < 20000:
-                    amostras.append("=== " + f.name + " ===\n" +
-                                    f.read_text(encoding="utf-8", errors="ignore")[:1500])
-        contexto = ("\n\n".join(amostras))[:8000] if amostras else \
-            "(nenhum repositório estudado ainda — baixe alguns com 'baixa github user/repo')"
-        codigo = self.prog._extrair_codigo(self.ia.gemini_complexo(
-            "Francisco quer uma habilidade nova para a IRIS, inspirada em código que "
-            "ela estudou. Crie um PLUGIN Python seguro com base na ideia e no material.\n"
-            "REGRAS: defina GATILHOS (lista), DESCRICAO (string), def executar(args) "
-            "que retorna string. Use só biblioteca padrão. NUNCA apague arquivos nem "
-            "rode comandos do sistema. Trate erros.\n"
-            "IDEIA DO FRANCISCO: " + ideia + "\n\n"
-            "MATERIAL ESTUDADO (inspiração, NÃO copie cru):\n" + contexto +
-            "\nResponda APENAS com o código em ```python```."))
-        # valida antes de salvar — código quebrado não vira plugin
-        erro = self.prog._validar_python(codigo)
-        if erro is not None or "def executar" not in codigo:
-            return ("Forjei um rascunho mas ele ainda tem problema (" +
-                    str(erro or "faltou def executar") + "). "
-                    "Tenta descrever a ideia de outro jeito?")
-        # salva como RASCUNHO (não ativa sozinho — você revisa e aprova)
-        pasta = Path.home() / "IRIS_Plugins" / "rascunhos"
-        pasta.mkdir(parents=True, exist_ok=True)
-        nome = "rascunho_" + re.sub(r"[^a-z0-9]+", "_", ideia.lower())[:20].strip("_") + ".py"
-        dest = pasta / nome
-        dest.write_text(codigo, encoding="utf-8")
-        self._reg("Forjou rascunho: " + ideia[:40])
-        return ("FORJEI UMA HABILIDADE NOVA (rascunho)! " + nome +
-                "\nGuardei em ~/IRIS_Plugins/rascunhos/ — NÃO ativei sozinha.\n"
-                "Revise o código. Se aprovar, mova para ~/IRIS_Plugins/ e use "
-                "'recarrega plugins'.\n\n" + codigo[:450] +
-                ("..." if len(codigo) > 450 else "") +
-                "\n\n(Assim eu USO o que aprendi virando habilidade — com você no comando.)")
-
-    def propor_blueprint_ia(self, objetivo=""):
-        """A IRIS projeta uma IA melhor que ela — o PLANO, para você construir.
-        Ela não se substitui sozinha; ela desenha o futuro e te entrega a planta."""
-        r = self.ia.gemini_complexo(
-            "Você é a IRIS, assistente do Francisco (Linux, Ryzen 7, projetos de "
-            "Arduino/FPGA/IA ternária NTM, escreve um livro). Ele quer que você ajude "
-            "a projetar uma assistente de IA AINDA MELHOR que você. Faça um BLUEPRINT "
-            "técnico em português:\n"
-            "1) Arquitetura (módulos, como dividir o código que hoje é um arquivo só)\n"
-            "2) Quais modelos locais/nuvem usar e quando\n"
-            "3) 5 capacidades novas que valeriam a pena\n"
-            "4) Como manter a segurança (confirmações, sandbox, nada destrutivo)\n"
-            "5) Primeiro passo concreto para começar\n"
-            "Objetivo extra do Francisco: " + (objetivo or "evolução geral") +
-            "\nSeja específico e realista para o hardware dele.")
-        dest = Path("iris_blueprint_proxima_ia.txt")
-        with open(dest, "a", encoding="utf-8") as f:
-            f.write("\n\n===== BLUEPRINT " +
-                    datetime.datetime.now().strftime("%d/%m/%Y %H:%M") + " =====\n" + r)
-        self._reg("Projetou blueprint de IA")
-        return ("BLUEPRINT DA PRÓXIMA IA:\n" + r[:1100] +
-                "\n\nPlano completo salvo em iris_blueprint_proxima_ia.txt. "
-                "Leva pro Fable/Opus e construímos juntos — eu ajudo a projetar "
-                "minha própria sucessora. :)")
-
-    def propor_melhoria(self, tema=""):
-        """A IRIS analisa o próprio código e PROPÕE melhoria — nunca se altera sozinha."""
-        try:
-            with open(os.path.abspath(sys.argv[0] if sys.argv else "iris.py"),
-                      "r", encoding="utf-8") as f:
-                codigo = f.read()
-            foco = tema.strip() or "qualidade geral, desempenho e robustez"
-            r = self.ia.gemini_complexo(
-                "Este é o código da assistente IRIS. Proponha UMA melhoria concreta "
-                "sobre: " + foco + ". Mostre o trecho atual e o trecho proposto, "
-                "explicando o ganho. NÃO reescreva o arquivo todo.\n\n" + codigo[:9000])
-            dest = Path("iris_melhorias.txt")
-            with open(dest, "a", encoding="utf-8") as f:
-                f.write("\n\n===== PROPOSTA " +
-                        datetime.datetime.now().strftime("%d/%m/%Y %H:%M") +
-                        " (" + foco + ") =====\n" + r)
-            self._reg("Propôs melhoria: " + foco[:40])
-            return ("PROPOSTA DE MELHORIA (" + foco + "):\n" + r[:800] +
-                    "\n\nSalva em iris_melhorias.txt. Eu nunca me altero sozinha — "
-                    "leva a proposta pro Fable/Opus aplicar com segurança!")
-        except Exception as e:
-            return "Erro: " + str(e)
-
-    # ══════════════════════════════════════════
-    #  PROTEÇÃO DE DISPOSITIVOS (v17) — guarda-costas
-    #  Find My Device, alerta de sumiço, modo pânico.
-    #  Tudo dentro do que o Android permite com segurança.
-    # ══════════════════════════════════════════
-    def achar_celular(self):
-        """Abre o Find My Device do Google — mapa, tocar, bloquear, apagar."""
-        url = "https://www.google.com/android/find"
-        try:
-            subprocess.Popen(["xdg-open", url],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as _e:
-            logging.exception(_e)
-        self._reg("Abriu Find My Device")
-        msg = ("Abri o Encontrar Meu Dispositivo do Google!\n"
-               "Lá você pode: ver no mapa, fazer tocar (mesmo no silencioso), "
-               "bloquear ou apagar o Poco X7 remotamente.\n"
-               "Link: " + url)
-        # se o celular ainda estiver na rede, tenta fazer ele tocar via ADB também
-        if self._adb_conectado() or self._adb_wifi():
-            try:
-                self._adb("shell media volume --stream 3 --set 15")
-                self._adb("shell input keyevent 24")
-                msg += "\n\nO Poco ainda está na nossa rede — subi o volume dele!"
-            except Exception as _e:
-                logging.exception(_e)
-        return msg
-
-    def tocar_celular(self):
-        """Faz o celular tocar no volume máximo (achar dentro de casa)."""
-        if not (self._adb_conectado() or self._adb_wifi()):
-            return ("Poco X7 não está na rede. Use 'acha meu celular' para o "
-                    "Find My Device do Google (funciona de qualquer lugar).")
-        self._adb("shell media volume --stream 3 --set 15")
-        # toca um alarme via stream de alarme no volume máximo
-        self._adb("shell cmd media_session volume --stream 4 --set 15")
-        for _ in range(3):
-            self._adb("shell input keyevent 24")
-        self._reg("Fez o celular tocar")
-        return "Volume do Poco X7 no máximo! Se estiver por perto, deve dar pra ouvir."
-
-    def cofre_emergencia(self):
-        """Backup rápido do essencial do celular para o notebook (antes que suma)."""
-        if not (self._adb_conectado() or self._adb_wifi()):
-            return "Poco X7 não conectado — conecte para eu guardar suas coisas."
-        dest = Path.home() / "Cofre_IRIS"
-        dest.mkdir(exist_ok=True)
-        salvos = []
-        try:
-            # fotos da câmera
-            fotos = dest / "Fotos"
-            fotos.mkdir(exist_ok=True)
-            self._adb("pull /sdcard/DCIM/Camera " + str(fotos))
-            salvos.append("fotos")
-            # downloads
-            dls = dest / "Downloads"
-            dls.mkdir(exist_ok=True)
-            self._adb("pull /sdcard/Download " + str(dls))
-            salvos.append("downloads")
-            # documentos/whatsapp se existir
-            self._adb("pull /sdcard/Documents " + str(dest / "Documentos"))
-            self._reg("Cofre de emergência")
-            return ("Cofre atualizado em ~/Cofre_IRIS!\n"
-                    "Guardei: " + ", ".join(salvos) +
-                    "\nSe o celular sumir, suas coisas estão seguras aqui no PC.")
-        except Exception as e:
-            return "Erro no cofre: " + str(e)
-
-    def modo_panico(self):
-        """Celular sumiu: dispara TUDO de uma vez."""
-        passos = []
-        # 1. avisa no Telegram
-        try:
-            self.telegram("MODO PÂNICO ativado por Francisco! "
-                          "Localizando e protegendo dispositivos.")
-            passos.append("Avisei no Telegram")
-        except Exception:
-            pass
-        # 2. abre Find My Device
-        try:
-            subprocess.Popen(["xdg-open", "https://www.google.com/android/find"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            passos.append("Abri o Find My Device")
-        except Exception:
-            pass
-        # 3. se na rede, toca e tira print do que tá na tela do celular
-        if self._adb_conectado() or self._adb_wifi():
-            try:
-                self.tocar_celular()
-                passos.append("Fiz o Poco tocar")
-                self.cofre_emergencia()
-                passos.append("Fiz backup de emergência")
-            except Exception as _e:
-                logging.exception(_e)
-        else:
-            passos.append("Poco fora da rede — use o Find My Device pra localizar")
-        self._reg("MODO PÂNICO")
-        return "MODO PÂNICO:\n" + "\n".join("- " + p for p in passos)
-
-    def vigia_dispositivos(self, ativar=True):
-        """Monitora se o Poco some da rede e avisa no Telegram."""
-        if ativar:
-            if getattr(self, "_vigia_disp", False):
-                return "Já estou de olho nos dispositivos!"
-            self._vigia_disp = True
-            threading.Thread(target=self._loop_vigia_disp, daemon=True).start()
-            self._reg("Vigia de dispositivos ativado")
-            return ("Guarda-costas ATIVO! Vou avisar no Telegram se o Poco X7 "
-                    "sumir da rede por mais de alguns minutos.")
-        self._vigia_disp = False
-        return "Guarda-costas desativado."
-
-    def _loop_vigia_disp(self):
-        sumido_contador = 0
-        estava_presente = False
-        while getattr(self, "_vigia_disp", False):
-            try:
-                presente = self._adb_conectado() or self._adb_wifi()
-                if presente:
-                    estava_presente = True
-                    sumido_contador = 0
-                elif estava_presente:
-                    sumido_contador += 1
-                    if sumido_contador == 4:  # ~2 min fora
-                        self.telegram("Atenção: o Poco X7 saiu da rede. "
-                                      "Se não foi você, diga 'modo panico' no Telegram.")
-                        self.notificar("IRIS", "Poco X7 saiu da rede!")
-            except Exception as _e:
-                logging.exception(_e)
-            time.sleep(30)
-
-    # ══════════════════════════════════════════
     #  APRENDIZADO (v18) — ela fica mais afiada com o tempo
     #  Não treina o cérebro (impossível no hardware), mas
     #  acumula e CONSULTA o que aprendeu sobre você.
@@ -2383,260 +2083,6 @@ void loop() {
             return "Erro: " + str(e)
 
     # ══════════════════════════════════════════
-    #  POCO X7 VIA ADB (USB ou WiFi)
-    # ══════════════════════════════════════════
-    def _adb(self, cmd):
-        try:
-            import shlex
-            r = subprocess.run(["adb"] + shlex.split(cmd),
-                               capture_output=True, text=True, timeout=15)
-            return (r.stdout or r.stderr or "").strip()
-        except Exception as _e:
-            logging.exception(_e)
-            return "Erro ADB: " + str(_e)
-
-    def _adb_conectado(self):
-        r = subprocess.getoutput("adb devices")
-        linhas = [l for l in r.split("\n")[1:] if l.strip()]
-        return any(l.strip().endswith("device") for l in linhas)
-
-    def _adb_wifi(self):
-        """Reconecta via WiFi se cabo desconectado."""
-        if not self._adb_conectado():
-            subprocess.getoutput("adb connect " + POCO_IP + ":5555")
-        return self._adb_conectado()
-
-    def _poco_ok(self):
-        return self._adb_conectado() or self._adb_wifi()
-
-    def celular_status(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado. Conecta o cabo USB ou a mesma WiFi!"
-        bat = self._adb("shell dumpsys battery | grep level").replace("level:", "").strip()
-        android = self._adb("shell getprop ro.build.version.release").strip()
-        arq = self._adb("shell df -h /data | tail -1").strip()
-        self._reg("Status do celular")
-        return ("Poco X7 | Android " + android + "\n" +
-                "Bateria: " + bat + "%\n" +
-                "Armazenamento: " + arq)
-
-    def celular_screenshot(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        nome = "poco_" + datetime.datetime.now().strftime("%d%m%Y_%H%M%S") + ".png"
-        dest = str(Path.home() / "Pictures" / nome)
-        self._adb("shell screencap -p /sdcard/iris_screen.png")
-        self._adb("pull /sdcard/iris_screen.png " + dest)
-        self._adb("shell rm /sdcard/iris_screen.png")
-        self._reg("Screenshot do celular: " + nome)
-        subprocess.Popen(["xdg-open", dest],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return "Screenshot do Poco X7 salvo em ~/Pictures/" + nome
-
-    def celular_bateria(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        bat = self._adb("shell dumpsys battery | grep level").replace("level:", "").strip()
-        status = self._adb("shell dumpsys battery | grep status")
-        temp = self._adb("shell dumpsys battery | grep temperature").replace("temperature:", "").strip()
-        try:
-            temp_c = str(round(int(temp) / 10)) + "C"
-        except Exception:
-            temp_c = temp
-        status_txt = "Carregando" if "2" in status else "Descarregando"
-        self._reg("Bateria do celular")
-        return "Poco X7: " + bat + "% | " + status_txt + " | Temp: " + temp_c
-
-    def celular_armazenamento(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("shell df -h /data /sdcard 2>/dev/null")
-        self._reg("Armazenamento do celular")
-        return "Armazenamento Poco X7:\n" + r
-
-    def celular_apps(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("shell pm list packages -3")
-        apps = [l.replace("package:", "") for l in r.split("\n") if l][:15]
-        self._reg("Apps do celular")
-        return "Apps instalados:\n" + "\n".join(apps)
-
-    def celular_desinstalar_app(self, pacote):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("uninstall " + pacote)
-        self._reg("Desinstalou app: " + pacote)
-        return "App '" + pacote + "': " + r
-
-    def celular_volume(self, acao):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        if acao == "aumentar":
-            self._adb("shell input keyevent 24")
-            self._adb("shell input keyevent 24")
-        elif acao == "diminuir":
-            self._adb("shell input keyevent 25")
-            self._adb("shell input keyevent 25")
-        elif acao == "mudo":
-            self._adb("shell input keyevent 164")
-        self._reg("Volume celular: " + acao)
-        return "Volume do Poco X7 " + acao + "!"
-
-    def celular_ligar_tela(self, ligar=True):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell input keyevent 26")
-        if ligar:
-            self._adb("shell input keyevent 82")
-        self._reg("Tela celular: " + ("ligada" if ligar else "desligada"))
-        return "Tela do Poco X7 " + ("ligada!" if ligar else "desligada!")
-
-    def celular_enviar_texto(self, texto):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell input text " + texto.replace(" ", "%s"))
-        self._reg("Digitou no celular: " + texto[:30])
-        return "Texto digitado no Poco X7!"
-
-    def celular_notificacoes(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("shell dumpsys notification | grep NotificationRecord | head -10")
-        self._reg("Notificações do celular")
-        return "Notificações:\n" + (r if r else "Nenhuma notificação")
-
-    def celular_reiniciar(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("reboot")
-        self._reg("Reiniciou o celular")
-        return "Poco X7 reiniciando..."
-
-    def celular_enviar_arquivo(self, arquivo_local):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        nome = Path(arquivo_local).name
-        self._adb("push " + arquivo_local + " /sdcard/Download/" + nome)
-        self._reg("Enviou arquivo: " + nome)
-        return "Arquivo enviado para Downloads do Poco X7: " + nome
-
-    def celular_baixar_arquivo(self, arquivo_celular):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        dest = str(Path.home() / "Downloads" / Path(arquivo_celular).name)
-        self._adb("pull " + arquivo_celular + " " + dest)
-        self._reg("Baixou arquivo do celular")
-        return "Arquivo baixado para ~/Downloads/!"
-
-    def celular_limpar_cache(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell pm clear --user 0 com.android.chrome")
-        self._adb("shell pm clear --user 0 com.miui.gallery")
-        r = self._adb("shell df -h /data | tail -1")
-        self._reg("Limpou cache do celular")
-        return "Cache limpo!\n" + r   # BUG da v7 corrigido: faltava o return
-
-    def celular_listar_arquivos(self, pasta="/sdcard"):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("shell ls -lh " + pasta + " 2>/dev/null")
-        linhas = [l for l in r.split("\n") if l.strip()][:20]
-        self._reg("Listou arquivos do celular: " + pasta)
-        return "Arquivos em " + pasta + ":\n" + "\n".join(linhas)
-
-    def celular_apagar_arquivo(self, caminho):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell rm -f " + caminho)
-        self._reg("Apagou do celular: " + caminho)
-        return "Arquivo apagado: " + caminho
-
-    def celular_apagar_downloads(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell find /sdcard/Download -type f -delete")
-        self._reg("Apagou downloads do celular")
-        return "Downloads do Poco X7 apagados!"
-
-    def celular_apagar_fotos_antigas(self, dias=30):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell find /sdcard/DCIM -name '*.jpg' -mtime +" + str(dias) + " -delete")
-        self._reg("Apagou fotos antigas do celular")
-        return "Fotos com mais de " + str(dias) + " dias apagadas!"
-
-    def celular_espaco_livre(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("shell df -h /sdcard /data 2>/dev/null")
-        self._reg("Espaço livre do celular")
-        return "Espaço no Poco X7:\n" + r
-
-    def celular_info_completa(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado! Certifique que estão na mesma WiFi."
-        android = self._adb("shell getprop ro.build.version.release").strip()
-        bat = self._adb("shell dumpsys battery | grep level").replace("level:", "").strip()
-        temp_b = self._adb("shell dumpsys battery | grep temperature").replace("temperature:", "").strip()
-        try:
-            temp_c = str(round(int(temp_b) / 10)) + "C"
-        except Exception:
-            temp_c = "?"
-        ram = self._adb("shell cat /proc/meminfo | grep MemAvailable").strip()
-        disco = self._adb("shell df -h /sdcard | tail -1").strip()
-        ip = self._adb("shell ip addr show wlan0 | grep 'inet '").strip()
-        self._reg("Info completa do celular")
-        return ("Poco X7 | Android " + android + "\n" +
-                "Bateria: " + bat + "% | Temp: " + temp_c + "\n" +
-                "RAM livre: " + ram + "\n" +
-                "Disco: " + disco + "\n" +
-                "IP: " + ip[:40])
-
-    def celular_ligar_wifi(self, ligar=True):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        self._adb("shell svc wifi " + ("enable" if ligar else "disable"))
-        self._reg("WiFi do celular: " + str(ligar))
-        return "WiFi do Poco X7 " + ("ligado!" if ligar else "desligado!")
-
-    def celular_instalar_apk(self, caminho_apk):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        r = self._adb("install " + caminho_apk)
-        self._reg("Instalou APK: " + caminho_apk)
-        return "APK instalado: " + r[:100]
-
-    def celular_fazer_backup_fotos(self):
-        if not self._poco_ok():
-            return "Poco X7 não conectado!"
-        dest = str(Path.home() / "Pictures" / "Backup_Poco_X7")
-        Path(dest).mkdir(parents=True, exist_ok=True)
-        self._adb("pull /sdcard/DCIM/Camera " + dest)
-        self._reg("Backup de fotos do celular")
-        return "Fotos copiadas para ~/Pictures/Backup_Poco_X7!"
-
-    def celular_status_painel(self):
-        """Dados para o painel — não bloqueia se desconectado."""
-        if not self._adb_conectado():
-            return {"conectado": False}
-        try:
-            bat = int(self._adb("shell dumpsys battery | grep level")
-                      .replace("level:", "").strip() or 0)
-            plugado = "2" in self._adb("shell dumpsys battery | grep status")
-            temp_b = self._adb("shell dumpsys battery | grep temperature").replace("temperature:", "").strip()
-            temp_c = round(int(temp_b) / 10) if temp_b.isdigit() else 0
-            disco_r = self._adb("shell df /sdcard 2>/dev/null | tail -1").split()
-            disco_p = int(disco_r[4].replace("%", "")) if len(disco_r) > 4 else 0
-            ram_r = self._adb("shell cat /proc/meminfo | grep MemAvailable").split()
-            ram_mb = int(ram_r[1]) // 1024 if len(ram_r) > 1 else 0
-            return {"bat": bat, "plugado": plugado, "temp": temp_c,
-                    "disco": disco_p, "ram_livre_mb": ram_mb, "conectado": True}
-        except Exception:
-            return {"conectado": False}
-
-    # ══════════════════════════════════════════
     #  MODO VIGIA — detecta movimento pela webcam
     # ══════════════════════════════════════════
     def ativar_vigia(self, ativar=True):
@@ -2885,60 +2331,85 @@ void loop() {
 
     def _loop_web(self, porta):
         from http.server import BaseHTTPRequestHandler, HTTPServer
-        import urllib.parse
+        import urllib.parse, json as _json
         acoes_self = self
+        _tpl = Path(__file__).parent.parent / "templates" / "casa.html"
+
         class H(BaseHTTPRequestHandler):
             def log_message(self, *a): pass
-            def _send(self, txt, tipo="text/html"):
-                self.send_response(200)
+
+            def _send(self, body, tipo="text/html", code=200):
+                enc = body.encode("utf-8") if isinstance(body, str) else body
+                self.send_response(code)
                 self.send_header("Content-Type", tipo + "; charset=utf-8")
+                self.send_header("Content-Length", str(len(enc)))
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(txt.encode("utf-8"))
+                self.wfile.write(enc)
+
             def do_GET(self):
-                p = urllib.parse.urlparse(self.path)
-                if p.path == "/cmd":
-                    q = urllib.parse.parse_qs(p.query)
+                parsed = urllib.parse.urlparse(self.path)
+                path = parsed.path
+
+                # ── REST: executa comando ──
+                if path == "/cmd":
+                    q = urllib.parse.parse_qs(parsed.query)
                     comando = q.get("c", [""])[0]
                     try:
-                        r = acoes_self.processador.processar(comando) if acoes_self.processador else "?"
+                        r = (acoes_self.processador.processar(comando)
+                             if acoes_self.processador else "sem processador")
                     except Exception as e:
-                        r = "Erro: " + str(e)
+                        r = f"Erro: {e}"
                     self._send(str(r), "text/plain")
                     return
-                # página principal
-                botoes = ["status", "dispositivos", "clima", "resumo do dia",
-                          "status do celular", "testa voce mesma", "briefing",
-                          "otimiza", "screenshot", "o que voce sabe"]
-                bhtml = "".join(
-                    "<button onclick=\"cmd('" + b + "')\">" + b + "</button>" for b in botoes)
-                html = """<!doctype html><html><head><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>IRIS</title><style>
-body{background:#0a0e1a;color:#cde;font-family:sans-serif;margin:0;padding:16px}
-h1{color:#00c8f5;font-size:22px}
-button{background:#13243a;color:#9df;border:1px solid #00c8f5;border-radius:10px;
-padding:14px;margin:5px;font-size:15px;width:46%}
-button:active{background:#00c8f5;color:#000}
-#out{margin-top:14px;padding:12px;background:#0d1424;border-radius:10px;
-white-space:pre-wrap;min-height:60px;font-size:14px}
-input{width:70%;padding:12px;border-radius:10px;border:1px solid #00c8f5;
-background:#0d1424;color:#cde;font-size:15px}
-</style></head><body>
-<h1>IRIS — controle</h1>
-<div>""" + bhtml + """</div>
-<div style="margin-top:10px">
-<input id=txt placeholder="ou digite um comando...">
-<button style="width:25%" onclick="cmd(document.getElementById('txt').value)">enviar</button>
-</div>
-<div id=out>Toque num botão...</div>
-<script>
-function cmd(c){
- document.getElementById('out').textContent='...';
- fetch('/cmd?c='+encodeURIComponent(c))
-  .then(r=>r.text()).then(t=>document.getElementById('out').textContent=t);
-}
-</script></body></html>"""
-                self._send(html)
+
+                # ── REST: estado da casa em JSON ──
+                if path == "/api/casa":
+                    try:
+                        sh = acoes_self.smarthome
+                        devs = []
+                        for nome, d in sh.dispositivos.items():
+                            devs.append({
+                                "nome": nome,
+                                "tipo": getattr(d, "tipo", "?"),
+                                "ligado": getattr(d, "ligado", False),
+                                "valor": getattr(d, "valor", None),
+                                "consumo_w": getattr(d, "consumo_w", 0),
+                            })
+                        leitura = sh.sensores.simular_leitura() if sh.sensores else {}
+                        alertas = acoes_self.seguranca.alertas_ativos() if acoes_self.seguranca else []
+                        hist = {}
+                        if hasattr(acoes_self, "_series_tempo"):
+                            hist = acoes_self._series_tempo.estatisticas(1) or {}
+                        payload = {
+                            "dispositivos": devs,
+                            "sensores": {
+                                "temperatura": getattr(leitura, "temperatura", None),
+                                "umidade": getattr(leitura, "umidade", None),
+                                "co2": getattr(leitura, "co2", None),
+                                "conforto": getattr(leitura, "conforto", None),
+                                "presenca": getattr(leitura, "presenca", False),
+                            },
+                            "alertas": alertas,
+                            "historico": hist,
+                            "ts": datetime.datetime.now().isoformat(),
+                        }
+                        self._send(_json.dumps(payload, ensure_ascii=False), "application/json")
+                    except Exception as e:
+                        self._send(_json.dumps({"erro": str(e)}), "application/json", 500)
+                    return
+
+                # ── Dashboard HTML ──
+                if path in ("/", "/casa", "/index.html"):
+                    if _tpl.exists():
+                        self._send(_tpl.read_text(encoding="utf-8"))
+                    else:
+                        # fallback simples caso o template não exista
+                        self._send(_FALLBACK_HTML)
+                    return
+
+                self._send("Not found", "text/plain", 404)
+
         try:
             srv = HTTPServer(("0.0.0.0", porta), H)
             while self._web_ativo:
@@ -3177,191 +2648,3 @@ Responda APENAS com a lista de ações, uma por linha, sem explicação.""")
     def iniciar_ditado(self):
         return "Modo ditado indisponível nesta interface."  # substituído pelo IRIS
 
-    # ══════════════════════════════════════════════════════════════
-    #  SMART HOME — v2.0
-    # ══════════════════════════════════════════════════════════════
-    def smarthome_painel(self) -> str:
-        self._reg("Painel smart home")
-        return self.smarthome.painel_status()
-
-    def smarthome_controlar(self, nome: str, ligado=None, valor=None) -> str:
-        self._reg(f"Controla dispositivo: {nome}")
-        return self.smarthome.controlar(nome, ligado, valor)
-
-    def smarthome_adicionar(self, nome: str, tipo: str) -> str:
-        self._reg(f"Adiciona dispositivo: {nome}")
-        return self.smarthome.adicionar_dispositivo(nome, tipo)
-
-    def smarthome_perfil(self, perfil: str) -> str:
-        self._reg(f"Perfil ambiente: {perfil}")
-        return self.smarthome.ajuste.aplicar_perfil(perfil)
-
-    def smarthome_clima_auto(self) -> str:
-        self._reg("Ajuste automático por clima")
-        return self.smarthome.atualizar_clima_e_ajustar(CIDADE_PADRAO, self.ia)
-
-    def smarthome_modo_ausente(self) -> str:
-        self._reg("Modo ausente")
-        return self.smarthome.modo_ausente()
-
-    def smarthome_modo_chegada(self) -> str:
-        self._reg("Modo chegada")
-        return self.smarthome.modo_chegada()
-
-    def smarthome_fusao_sensores(self) -> str:
-        self._reg("Fusão sensores")
-        leitura = self.smarthome.sensores.simular_leitura()
-        acoes = self.smarthome.ajuste.ajuste_por_conforto(leitura)
-        resultado = self.smarthome.sensores.resumo()
-        if acoes:
-            resultado += "\n\nAjustes realizados:\n" + "\n".join(f"  • {a}" for a in acoes)
-        return resultado
-
-    def smarthome_consumo(self) -> str:
-        return self.smarthome.consumo_total()
-
-    def smarthome_tarifas(self) -> str:
-        self._reg("Tarifas energia")
-        return self.logistica.tarifas.custo_atual()
-
-    def smarthome_geofence_status(self) -> str:
-        return self.smarthome.geo.status()
-
-    def smarthome_geofence_add(self, nome: str, lat: float, lon: float, raio: float = 200) -> str:
-        self._reg(f"Geofence: {nome}")
-        return self.smarthome.geo.adicionar_zona(nome, lat, lon, raio)
-
-    def smarthome_geofence_check(self) -> str:
-        pos = self.smarthome.geo.obter_gps_ip()
-        if not pos:
-            return "Não consegui obter localização GPS via IP"
-        lat, lon = pos
-        resultado = self.smarthome.geo.verificar_posicao(lat, lon)
-        linhas = [f"Posição atual: {lat:.4f}, {lon:.4f}"]
-        for zona, dentro in resultado.items():
-            linhas.append(f"  {zona}: {'📍 DENTRO' if dentro else '○ fora'}")
-        return "\n".join(linhas)
-
-    def smarthome_roteador(self) -> str:
-        return self.smarthome.roteador.status()
-
-    def smarthome_otimizar_redes(self) -> str:
-        mudancas = self.smarthome.roteador.atribuir_redes(self.smarthome.dispositivos)
-        if not mudancas:
-            return "Redes já estão otimizadas"
-        return "Roteamento otimizado:\n" + "\n".join(f"  {m}" for m in mudancas)
-
-    # ── BIOMETRIA E INTERAÇÃO ──
-    def bio_status_voz(self) -> str:
-        return self.biometria_voz.status()
-
-    def bio_cadastrar_perfil(self, nome: str) -> str:
-        self._reg(f"Perfil de voz: {nome}")
-        return self.biometria_voz.cadastrar_perfil(nome)
-
-    def bio_analisar_expressao(self) -> str:
-        self._reg("Análise de expressão")
-        estado = self.expressao.analisar()
-        base = self.expressao.resumo()
-        if estado.sugestao and self.smarthome:
-            if "descanso" in estado.sugestao:
-                self.smarthome.ajuste.aplicar_perfil("descanso")
-            elif "foco" in estado.sugestao:
-                self.smarthome.ajuste.aplicar_perfil("trabalho")
-        return base
-
-    def bio_gestos_status(self) -> str:
-        return self.gestos.status()
-
-    def bio_narrar_casa(self) -> str:
-        self._reg("Narração do status da casa")
-        voz = getattr(self, 'voz', None)
-        self.sintecontexto.voz = voz
-        return self.sintecontexto.narrar(
-            self.smarthome,
-            self.seguranca,
-            self.logistica
-        )
-
-    # ── SEGURANÇA ──
-    def seg_status(self) -> str:
-        return self.seguranca.status_completo()
-
-    def seg_cadastrar_pet(self, nome: str) -> str:
-        self._reg(f"Pet cadastrado: {nome}")
-        return self.seguranca.filtro.cadastrar_pet(nome)
-
-    def seg_cerca_status(self) -> str:
-        return self.seguranca.cerca.status()
-
-    def seg_cerca_cadastrar(self, nome: str, tipo: str, dispositivo: str) -> str:
-        self._reg(f"Cerca virtual: {nome}")
-        return self.seguranca.cerca.cadastrar(nome, tipo, dispositivo)
-
-    def seg_emergencia_status(self) -> str:
-        return self.seguranca.emergencia.status()
-
-    def seg_cortar_tudo(self) -> str:
-        self._reg("EMERGÊNCIA: corte gás+água")
-        resultado = self.seguranca.emergencia.cortar_tudo()
-        self.notificar("EMERGÊNCIA", resultado)
-        return resultado
-
-    def seg_restaurar_valvulas(self) -> str:
-        return self.seguranca.emergencia.restaurar()
-
-    def seg_auditoria(self, dias: int = 7) -> str:
-        return self.seguranca.auditoria.analisar_padroes(dias)
-
-    def seg_acesso(self, dispositivo: str, usuario: str, tipo: str = "entrada") -> str:
-        return self.seguranca.auditoria.registrar_acesso(dispositivo, usuario, tipo)
-
-    def seg_alertas(self) -> str:
-        alertas = self.seguranca.alertas_ativos()
-        if not alertas:
-            return "Nenhum alerta de segurança ativo"
-        return "ALERTAS ATIVOS:\n" + "\n".join(f"  ⚠️ {a}" for a in alertas)
-
-    # ── LOGÍSTICA ──
-    def log_status(self) -> str:
-        return self.logistica.status_completo()
-
-    def log_suprimentos(self) -> str:
-        return self.logistica.compras.status()
-
-    def log_atualizar_nivel(self, item: str, nivel: float) -> str:
-        return self.logistica.compras.atualizar_nivel(item, nivel)
-
-    def log_verificar_compras(self) -> str:
-        pedidos = self.logistica.compras.verificar_e_pedir()
-        if not pedidos:
-            return "Todos os suprimentos estão OK"
-        return "\n".join(pedidos)
-
-    def log_auto_correcao(self) -> str:
-        self._reg("Auto-correção do sistema")
-        return self.logistica.correcao.limpar_cache_sistema()
-
-    def log_relatorio_logs(self) -> str:
-        return self.logistica.relatorio.analisar_logs_sistema()
-
-    def log_relatorio_hardware(self) -> str:
-        return self.logistica.relatorio.gerar_relatorio_hardware()
-
-    def log_proximo_horario_barato(self) -> str:
-        return self.logistica.tarifas.proximo_horario_barato()
-
-    # ── AGENTE DE EXECUÇÃO / TOOL USE ──
-    def agente_tools_listar(self) -> str:
-        return self.agente.listar_tools()
-
-    def agente_tools_executar(self, objetivo: str) -> str:
-        self._reg(f"Agente tool-use: {objetivo[:60]}")
-        return self.agente.executar_tarefa(objetivo)
-
-    def agente_tools_historico(self) -> str:
-        return self.agente.historico_execucoes()
-
-    def agente_executar_codigo(self, codigo: str) -> str:
-        self._reg("Agente: execução de código")
-        return self.agente.executor.executar_e_formatar(codigo)

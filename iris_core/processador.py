@@ -5,6 +5,7 @@ import logging
 from .config import (CFG, CONFIG_PATH, GROQ_API_KEY, GEMINI_API_KEY,
     OPENWEATHER_KEY, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, ARDUINO_PORTA, ARDUINO_ATIVO,
     POCO_IP, CIDADE_PADRAO, MODELO_GROQ, MODELO_GEMINI)
+from .roteador import criar_roteador_smarthome
 
 
 # ══════════════════════════════════════════════════════════════
@@ -92,6 +93,7 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
         self.mon = mon
         self.voz = voz
         self._pendente = None  # v11: ação aguardando confirmação (ex: apagar pasta)
+        self._roteador_smarthome = criar_roteador_smarthome(acoes)
 
     def processar(self, prompt):
         p = prompt.lower().strip()
@@ -190,182 +192,25 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
                 self._pendente = ("restaurar_iris", pendente)
             return msg
 
-        # ══════════════════════════════════════════════════════════════
-        #  SMART HOME v2.0 — Controle Inteligente da Casa
-        # ══════════════════════════════════════════════════════════════
+        # ── SMART HOME / BIO / SEGURANÇA / LOGÍSTICA / AGENTE ──
+        _r = self._roteador_smarthome.despachar(p)
+        if _r is not None:
+            return _r
 
-        # ── Painel e status geral ──
-        if any(x in p for x in ["painel casa", "status casa", "casa status",
-                                 "smart home", "smarthome", "dispositivos da casa",
-                                 "o que ta ligado", "o que está ligado"]):
-            return self.ac.smarthome_painel()
-
-        # ── Controle de dispositivos ──
-        if any(p.startswith(x) for x in ["liga ", "ligar ", "desliga ", "desligar ",
-                                          "acende ", "apaga a", "apaga o"]):
-            # verifica se é dispositivo da casa (não LED Arduino)
-            nomes_casa = [n.lower() for n in self.ac.smarthome.dispositivos]
-            alvo = p
-            for w in ["liga ", "ligar ", "desliga ", "desligar ", "acende ", "apaga a ", "apaga o "]:
-                alvo = alvo.replace(w, "", 1)
-            alvo = alvo.strip()
-            if any(n in alvo for n in nomes_casa) or any(
-                    x in alvo for x in ["luz", "ar", "som", "tv", "tomada", "quarto", "sala"]):
-                ligar = not any(x in p for x in ["desliga", "apaga", "desligar", "apagar"])
-                return self.ac.smarthome_controlar(alvo, ligado=ligar)
-
-        # ── Perfis de ambiente ──
-        if any(p.startswith(x) for x in ["modo trabalho", "modo descanso", "modo cinema",
-                                          "modo refeicao", "modo dormir", "modo exercicio",
-                                          "perfil trabalho", "perfil descanso", "perfil cinema",
-                                          "ambiente trabalho", "ambiente descanso"]):
-            perfil = p.replace("modo ", "").replace("perfil ", "").replace("ambiente ", "").strip()
-            return self.ac.smarthome_perfil(perfil)
-
-        # ── Fusão de sensores ──
-        if any(x in p for x in ["sensores", "temperatura ambiente", "umidade", "presença",
-                                 "fusao sensores", "fusão sensores", "leitura ambiente",
-                                 "conforto", "score de conforto"]):
-            return self.ac.smarthome_fusao_sensores()
-
-        # ── Ajuste por clima ──
-        if any(x in p for x in ["ajusta por clima", "ajuste automatico", "ajuste automático",
-                                 "casa pelo clima", "climatiza automatico"]):
-            return self.ac.smarthome_clima_auto()
-
-        # ── Modo ausente / chegada ──
-        if any(x in p for x in ["saindo de casa", "vou sair", "modo ausente",
-                                 "modo viagem", "ninguem em casa", "ninguém em casa"]):
-            return self.ac.smarthome_modo_ausente()
-        if any(x in p for x in ["cheguei", "chegando em casa", "modo chegada",
-                                 "estou em casa", "tô em casa"]):
-            return self.ac.smarthome_modo_chegada()
-
-        # ── Consumo e tarifas ──
-        if any(x in p for x in ["consumo energia", "consumo atual", "kwh", "conta de luz",
-                                 "tarifa energia", "tarifa atual", "horario pico",
-                                 "horário pico", "energia cara", "tarifa barata"]):
-            return self.ac.smarthome_tarifas()
-        if any(x in p for x in ["proximo horario barato", "próximo horário barato",
-                                 "quando energia fica barata", "horario economico"]):
-            return self.ac.log_proximo_horario_barato()
-        if any(x in p for x in ["consumo total", "watts total", "consumo da casa"]):
-            return self.ac.smarthome_consumo()
-
-        # ── Roteamento de sinal ──
-        if any(x in p for x in ["roteamento", "melhor rede", "qual rede", "status redes",
-                                 "otimiza redes", "otimizar redes", "redes disponiveis"]):
-            if "otimiza" in p or "otimizar" in p:
-                return self.ac.smarthome_otimizar_redes()
-            return self.ac.smarthome_roteador()
-
-        # ── Geofencing ──
-        if any(x in p for x in ["geofence", "cerca gps", "minha localizacao",
-                                 "localização atual", "onde estou", "gps"]):
-            if any(x in p for x in ["adiciona", "cria zona", "nova zona"]):
-                partes = p.split()
-                nums = [float(x) for x in partes if x.replace(".", "").replace("-", "").isdigit()]
-                if len(nums) >= 2:
-                    nome_zona = partes[-1] if not partes[-1].replace(".", "").replace("-", "").isdigit() else "home"
-                    return self.ac.smarthome_geofence_add(nome_zona, nums[0], nums[1])
-            if "status" in p or "zonas" in p:
-                return self.ac.smarthome_geofence_status()
-            return self.ac.smarthome_geofence_check()
-
-        # ── Adicionar dispositivo ──
+        # ── Adicionar dispositivo (precisa de parse especial) ──
         if any(p.startswith(x) for x in ["adiciona dispositivo", "novo dispositivo",
                                           "cadastra dispositivo", "registra dispositivo"]):
             partes = p.split()
             if len(partes) >= 3:
-                tipo = partes[-1] if partes[-1] in ("luz", "som", "tomada", "sensor", "tv", "climatizacao") else "tomada"
+                tipo = partes[-1] if partes[-1] in (
+                    "luz", "som", "tomada", "sensor", "tv", "climatizacao") else "tomada"
                 nome = " ".join(partes[2:-1]) if len(partes) > 3 else partes[-1]
                 return self.ac.smarthome_adicionar(nome, tipo)
             return "Use: adiciona dispositivo [nome] [tipo]\nTipos: luz, som, tomada, sensor, tv, climatizacao"
 
-        # ══════════════════════════════════════════════════════════════
-        #  BIOMETRIA E INTERAÇÃO HUMANA AVANÇADA
-        # ══════════════════════════════════════════════════════════════
-
-        if any(x in p for x in ["biometria voz", "status voz", "quem esta falando",
-                                 "identifica voz", "perfis de voz"]):
-            return self.ac.bio_status_voz()
-
-        if any(p.startswith(x) for x in ["cadastra perfil", "novo perfil voz",
-                                          "adiciona perfil", "registra perfil"]):
-            nome_perfil = p
-            for w in ["cadastra perfil", "novo perfil voz", "adiciona perfil", "registra perfil", "voz"]:
-                nome_perfil = nome_perfil.replace(w, "", 1)
-            return self.ac.bio_cadastrar_perfil(nome_perfil.strip())
-
-        if any(x in p for x in ["analisa expressao", "analisa expressão", "como estou",
-                                 "meu estado emocional", "detecta cansaco", "detecta cansaço",
-                                 "estou estressado", "veja minha expressao"]):
-            return self.ac.bio_analisar_expressao()
-
-        if any(x in p for x in ["gestos", "controle gestos", "status gestos",
-                                 "gestos da mao", "gestos da mão"]):
-            return self.ac.bio_gestos_status()
-
-        if any(x in p for x in ["narra a casa", "narra status", "resume a casa",
-                                 "como ta a casa", "como está a casa", "contexto da casa",
-                                 "sintese casa", "síntese casa", "fala sobre a casa"]):
-            return self.ac.bio_narrar_casa()
-
-        # ══════════════════════════════════════════════════════════════
-        #  SEGURANÇA E MONITORAMENTO
-        # ══════════════════════════════════════════════════════════════
-
-        if any(x in p for x in ["seguranca casa", "segurança casa", "status seguranca",
-                                 "alertas de seguranca", "central de seguranca"]):
-            return self.ac.seg_status()
-
-        if any(x in p for x in ["alertas ativos", "alertas de segurança", "alertas agora"]):
-            return self.ac.seg_alertas()
-
-        if any(p.startswith(x) for x in ["cadastra pet", "meu pet", "meu cachorro",
-                                          "meu gato", "filtra pet", "ignora pet"]):
-            nome_pet = p
-            for w in ["cadastra pet", "meu pet", "meu cachorro", "meu gato", "filtra pet", "ignora pet", "o", "a"]:
-                nome_pet = nome_pet.replace(w, "", 1)
-            return self.ac.seg_cadastrar_pet(nome_pet.strip() or "pet")
-
-        if any(x in p for x in ["cerca virtual", "monitora crianca", "monitora criança",
-                                 "monitora idoso", "status cerca"]):
-            return self.ac.seg_cerca_status()
-
-        if any(x in p for x in ["emergencia gas", "emergência gás", "vazamento gas",
-                                 "vazamento gás", "corta gas", "cortar gas", "corta agua",
-                                 "cortar agua", "vazamento agua", "emergencia agua"]):
-            return self.ac.seg_cortar_tudo()
-
-        if any(x in p for x in ["restaura valvulas", "restaurar válvulas",
-                                 "abre valvulas", "libera gas", "libera agua"]):
-            return self.ac.seg_restaurar_valvulas()
-
-        if any(x in p for x in ["status valvulas", "válvulas", "valvulas", "emergencia status"]):
-            return self.ac.seg_emergencia_status()
-
-        if any(x in p for x in ["auditoria acesso", "historico fechadura", "acessos suspeitos",
-                                 "analisa acessos", "padroes acesso"]):
-            nums = re.findall(r"\d+", p)
-            dias = int(nums[0]) if nums else 7
-            return self.ac.seg_auditoria(dias)
-
-        # ══════════════════════════════════════════════════════════════
-        #  DIAGNÓSTICO E LOGÍSTICA
-        # ══════════════════════════════════════════════════════════════
-
-        if any(x in p for x in ["logistica", "logística", "status logistica",
-                                 "suprimentos", "compras automaticas", "compras automáticas"]):
-            return self.ac.log_status()
-
-        if any(x in p for x in ["status suprimentos", "nivel suprimentos", "nível suprimentos",
-                                 "o que precisa comprar", "o que falta"]):
-            return self.ac.log_suprimentos()
-
+        # ── Atualizar nível de suprimento (precisa de parse especial) ──
         if any(p.startswith(x) for x in ["atualiza nivel", "nível de", "nivel de",
                                           "atualizei o nivel", "gastei"]):
-            # "atualiza nivel Filtro Agua 30"
             nums = re.findall(r"\d+", p)
             if nums:
                 nivel = float(nums[0]) / 100.0
@@ -374,50 +219,6 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
                     item = item.replace(w, "", 1)
                 item = re.sub(r"\d+", "", item).strip()
                 return self.ac.log_atualizar_nivel(item, nivel)
-
-        if any(x in p for x in ["verificar compras", "verificar suprimentos",
-                                 "precisa pedir algo", "pedidos automaticos"]):
-            return self.ac.log_verificar_compras()
-
-        if any(x in p for x in ["auto correcao", "auto correção", "auto-correção",
-                                 "limpa cache sistema", "auto corrige", "sistema preso",
-                                 "sistema travado", "reinicia servico"]):
-            return self.ac.log_auto_correcao()
-
-        if any(x in p for x in ["analisa logs", "erros do sistema", "log do sistema",
-                                 "que erros tem", "problemas no sistema"]):
-            return self.ac.log_relatorio_logs()
-
-        if any(x in p for x in ["relatorio hardware", "relatório hardware",
-                                 "saude do hardware", "saúde do hardware",
-                                 "temperatura processador", "hardware status"]):
-            return self.ac.log_relatorio_hardware()
-
-        # ══════════════════════════════════════════════════════════════
-        #  AGENTE DE EXECUÇÃO / TOOL USE
-        # ══════════════════════════════════════════════════════════════
-
-        if any(x in p for x in ["lista ferramentas", "ferramentas disponiveis",
-                                 "tools disponiveis", "tools disponíveis", "minhas tools"]):
-            return self.ac.agente_tools_listar()
-
-        if any(x in p for x in ["historico agente", "histórico agente",
-                                 "execucoes passadas", "o que o agente fez"]):
-            return self.ac.agente_tools_historico()
-
-        if any(p.startswith(x) for x in ["agente executa", "agente faz", "tool use",
-                                          "executa objetivo ia", "deixa o agente"]):
-            obj = p
-            for w in ["agente executa", "agente faz", "tool use", "executa objetivo ia", "deixa o agente"]:
-                obj = obj.replace(w, "", 1)
-            return self.ac.agente_tools_executar(obj.strip())
-
-        if any(p.startswith(x) for x in ["executa codigo isolado", "roda codigo isolado",
-                                          "sandbox", "executa seguro"]):
-            codigo = p
-            for w in ["executa codigo isolado", "roda codigo isolado", "sandbox", "executa seguro"]:
-                codigo = codigo.replace(w, "", 1)
-            return self.ac.agente_executar_codigo(codigo.strip())
 
         # ── PARAR DE FALAR (interrupção imediata) ──
         if p in ("para", "pare", "silencio", "silêncio", "cala a boca",
