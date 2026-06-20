@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IRIS — Smart Home</title>
+  <style>
+    :root {
+      --bg: #080818;
+      --card: #0f0f2e;
+      --border: #1e1e5a;
+      --accent: #4a9eff;
+      --accent2: #00d4aa;
+      --warn: #ff6b35;
+      --danger: #ff3366;
+      --text: #c8d8f0;
+      --muted: #5a6a8a;
+      --on: #00e676;
+      --off: #37474f;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Courier New', monospace;
+      min-height: 100vh;
+    }
+    header {
+      background: linear-gradient(90deg, #0a0a2e, #0f1a4e);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 { font-size: 1.4rem; color: var(--accent); letter-spacing: 3px; }
+    header .status {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    header .status span { color: var(--accent2); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 16px;
+      padding: 20px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+    }
+    .card h2 {
+      font-size: 0.75rem;
+      letter-spacing: 2px;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+    }
+    /* Dispositivos */
+    .device-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #121230;
+    }
+    .device-row:last-child { border-bottom: none; }
+    .device-icon { font-size: 1.2rem; margin-right: 10px; }
+    .device-name { flex: 1; font-size: 0.9rem; }
+    .device-net {
+      font-size: 0.65rem;
+      color: var(--muted);
+      margin-right: 10px;
+    }
+    .toggle {
+      width: 42px; height: 22px;
+      background: var(--off);
+      border-radius: 11px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+      border: none;
+    }
+    .toggle.on { background: var(--on); }
+    .toggle::after {
+      content: "";
+      position: absolute;
+      width: 16px; height: 16px;
+      background: white;
+      border-radius: 50%;
+      top: 3px; left: 3px;
+      transition: left 0.2s;
+    }
+    .toggle.on::after { left: 23px; }
+    /* Sensores */
+    .sensor-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 6px 0;
+    }
+    .sensor-label { font-size: 0.85rem; color: var(--muted); }
+    .sensor-val { font-size: 1.3rem; color: var(--accent2); font-weight: bold; }
+    .sensor-unit { font-size: 0.75rem; color: var(--muted); }
+    /* Barra de progresso */
+    .barra-wrap { margin: 6px 0; }
+    .barra-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .barra {
+      width: 100%;
+      height: 6px;
+      background: #1a1a40;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .barra-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, var(--accent2), var(--accent));
+      transition: width 0.5s;
+    }
+    /* Tarifa */
+    .tarifa-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    .tarifa-normal { background: #1a3a1a; color: var(--on); }
+    .tarifa-pico   { background: #3a1a1a; color: var(--danger); }
+    .tarifa-red    { background: #1a2a3a; color: var(--accent); }
+    /* Alertas */
+    .alerta {
+      background: #2a0a1a;
+      border: 1px solid var(--danger);
+      border-radius: 8px;
+      padding: 10px;
+      margin: 6px 0;
+      font-size: 0.82rem;
+      color: #ff8099;
+    }
+    /* Gráfico sparkline */
+    .sparkline-wrap { margin: 4px 0; }
+    .spark-label { font-size: 0.75rem; color: var(--muted); margin-bottom: 2px; }
+    .sparkline {
+      height: 40px;
+      width: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+    .sparkline canvas { width: 100%; height: 100%; }
+    /* Geofence */
+    .geo-zona {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      font-size: 0.85rem;
+    }
+    .geo-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--off);
+    }
+    .geo-dot.inside { background: var(--on); box-shadow: 0 0 8px var(--on); }
+    /* Suprimentos */
+    .item-nivel { margin: 6px 0; }
+    .item-nome { font-size: 0.8rem; color: var(--text); margin-bottom: 2px; }
+    /* Conforto score */
+    .score-circle {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      border: 4px solid var(--accent2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      margin: 8px auto;
+    }
+    .score-num { font-size: 1.5rem; font-weight: bold; color: var(--accent2); }
+    .score-label { font-size: 0.6rem; color: var(--muted); }
+    /* Perfis */
+    .perfis { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .perfil-btn {
+      background: #151535;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .perfil-btn:hover {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+    .perfil-btn.ativo {
+      background: var(--accent2);
+      color: #000;
+      border-color: var(--accent2);
+    }
+    /* Loading */
+    .loading { text-align: center; color: var(--muted); padding: 20px; font-size: 0.85rem; }
+    /* Timestamp */
+    #last-update { font-size: 0.7rem; color: var(--muted); text-align: center; padding: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>◈ IRIS SMART HOME</h1>
+    <div class="status">Auto-refresh: <span id="countdown">10</span>s | <span id="hora"></span></div>
+  </header>
+
+  <div class="grid">
+    <!-- Dispositivos -->
+    <div class="card" id="card-dispositivos">
+      <h2>⚡ Dispositivos</h2>
+      <div id="dispositivos-list"><div class="loading">Carregando...</div></div>
+    </div>
+
+    <!-- Sensores em tempo real -->
+    <div class="card" id="card-sensores">
+      <h2>📡 Sensores</h2>
+      <div id="sensores-content"><div class="loading">Carregando...</div></div>
+    </div>
+
+    <!-- Conforto + Perfis -->
+    <div class="card">
+      <h2>🎯 Conforto & Perfis</h2>
+      <div id="conforto-content"><div class="loading">...</div></div>
+      <div class="perfis" id="perfis-btns">
+        <button class="perfil-btn" onclick="ativarPerfil('trabalho')">💼 Trabalho</button>
+        <button class="perfil-btn" onclick="ativarPerfil('descanso')">🛋 Descanso</button>
+        <button class="perfil-btn" onclick="ativarPerfil('cinema')">🎬 Cinema</button>
+        <button class="perfil-btn" onclick="ativarPerfil('dormir')">🌙 Dormir</button>
+        <button class="perfil-btn" onclick="ativarPerfil('exercicio')">🏃 Exercício</button>
+        <button class="perfil-btn" onclick="ativarPerfil('refeicao')">🍽 Refeição</button>
+      </div>
+    </div>
+
+    <!-- Tarifa & Consumo -->
+    <div class="card">
+      <h2>💰 Energia</h2>
+      <div id="tarifa-content"><div class="loading">...</div></div>
+    </div>
+
+    <!-- Segurança -->
+    <div class="card">
+      <h2>🔒 Segurança</h2>
+      <div id="seguranca-content"><div class="loading">...</div></div>
+    </div>
+
+    <!-- Suprimentos -->
+    <div class="card">
+      <h2>🛒 Suprimentos</h2>
+      <div id="suprimentos-content"><div class="loading">...</div></div>
+    </div>
+
+    <!-- Histórico sparklines -->
+    <div class="card" style="grid-column: span 2;">
+      <h2>📈 Histórico (últimas 6h)</h2>
+      <div id="historico-content"><div class="loading">...</div></div>
+    </div>
+
+    <!-- Geofence -->
+    <div class="card">
+      <h2>📍 Geofencing</h2>
+      <div id="geo-content"><div class="loading">...</div></div>
+    </div>
+  </div>
+
+  <div id="last-update">—</div>
+
+  <script>
+    let countdown = 10;
+    let dadosHistorico = {};
+
+    // ── Atualiza relógio ──
+    function atualizarHora() {
+      const agora = new Date();
+      document.getElementById("hora").textContent =
+        agora.toLocaleTimeString("pt-BR");
+    }
+    setInterval(atualizarHora, 1000);
+    atualizarHora();
+
+    // ── Countdown de refresh ──
+    setInterval(() => {
+      countdown--;
+      document.getElementById("countdown").textContent = countdown;
+      if (countdown <= 0) {
+        countdown = 10;
+        carregarTudo();
+      }
+    }, 1000);
+
+    // ── Fetch principal ──
+    async function carregarTudo() {
+      try {
+        const r = await fetch("/api/casa");
+        const d = await r.json();
+        renderizar(d);
+        document.getElementById("last-update").textContent =
+          "Atualizado: " + new Date().toLocaleTimeString("pt-BR");
+      } catch (e) {
+        document.getElementById("last-update").textContent = "Erro ao carregar dados";
+      }
+    }
+
+    function renderizar(d) {
+      renderDispositivos(d.dispositivos || {});
+      renderSensores(d.sensores || {});
+      renderConforto(d.sensores || {});
+      renderTarifa(d.tarifa || {});
+      renderSeguranca(d.alertas || []);
+      renderSuprimentos(d.suprimentos || []);
+      renderHistorico(d.historico || []);
+      renderGeo(d.geofence || {});
+    }
+
+    function renderDispositivos(devs) {
+      const ICONS = {luz:"💡", climatizacao:"❄️", som:"🔊", tomada:"🔌", sensor:"📡", tv:"📺"};
+      const el = document.getElementById("dispositivos-list");
+      if (!Object.keys(devs).length) { el.innerHTML = "<div class='loading'>Sem dispositivos</div>"; return; }
+      el.innerHTML = Object.entries(devs).map(([nome, d]) => `
+        <div class="device-row">
+          <span class="device-icon">${ICONS[d.tipo] || "•"}</span>
+          <span class="device-name">${nome}</span>
+          <span class="device-net">${d.rede || ""}</span>
+          <button class="toggle ${d.ligado ? 'on' : ''}"
+            onclick="toggleDev('${nome}', ${!d.ligado})"></button>
+        </div>`).join("");
+    }
+
+    function renderSensores(s) {
+      const el = document.getElementById("sensores-content");
+      if (!s.temperatura && s.temperatura !== 0) { el.innerHTML="<div class='loading'>Sem leituras</div>"; return; }
+      el.innerHTML = `
+        <div class="sensor-row">
+          <span class="sensor-label">🌡 Temperatura</span>
+          <span><span class="sensor-val">${(s.temperatura||0).toFixed(1)}</span><span class="sensor-unit"> °C</span></span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">💧 Umidade</span>
+          <span><span class="sensor-val">${(s.umidade||0).toFixed(0)}</span><span class="sensor-unit"> %</span></span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">👤 Presença</span>
+          <span class="sensor-val" style="font-size:1rem;color:${s.presenca?'var(--on)':'var(--muted)'}">${s.presenca?"DETECTADA":"vazio"}</span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">🌿 CO₂</span>
+          <span><span class="sensor-val">${(s.co2||400).toFixed(0)}</span><span class="sensor-unit"> ppm</span></span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">🔊 Ruído</span>
+          <span><span class="sensor-val">${(s.ruido||0).toFixed(0)}</span><span class="sensor-unit"> dB</span></span>
+        </div>`;
+    }
+
+    function renderConforto(s) {
+      const score = s.conforto || 0;
+      const cor = score > 70 ? "var(--on)" : score > 40 ? "var(--warn)" : "var(--danger)";
+      document.getElementById("conforto-content").innerHTML = `
+        <div class="score-circle" style="border-color:${cor}">
+          <div class="score-num" style="color:${cor}">${score.toFixed(0)}</div>
+          <div class="score-label">CONFORTO</div>
+        </div>`;
+    }
+
+    function renderTarifa(t) {
+      const el = document.getElementById("tarifa-content");
+      const classe = t.modo === "pico" ? "tarifa-pico" : t.modo === "reduzida" ? "tarifa-red" : "tarifa-normal";
+      el.innerHTML = `
+        <div style="margin-bottom:12px">
+          <span class="tarifa-badge ${classe}">${(t.modo||"normal").toUpperCase()}</span>
+          <span style="margin-left:10px;font-size:0.9rem">R$ ${(t.tarifa||0.52).toFixed(2)}/kWh</span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">Consumo atual</span>
+          <span><span class="sensor-val" style="font-size:1.1rem">${(t.consumo_w||0).toFixed(0)}</span><span class="sensor-unit"> W</span></span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">Custo/hora</span>
+          <span class="sensor-val" style="font-size:1rem">R$ ${(t.custo_hora||0).toFixed(3)}</span>
+        </div>
+        <div class="sensor-row">
+          <span class="sensor-label">Economia acumulada</span>
+          <span class="sensor-val" style="font-size:1rem;color:var(--on)">R$ ${(t.economia||0).toFixed(2)}</span>
+        </div>`;
+    }
+
+    function renderSeguranca(alertas) {
+      const el = document.getElementById("seguranca-content");
+      if (!alertas.length) {
+        el.innerHTML = `<div style="color:var(--on);padding:10px;text-align:center">✓ Sistema seguro</div>`;
+        return;
+      }
+      el.innerHTML = alertas.map(a => `<div class="alerta">⚠️ ${a}</div>`).join("");
+    }
+
+    function renderSuprimentos(itens) {
+      const el = document.getElementById("suprimentos-content");
+      if (!itens.length) { el.innerHTML="<div class='loading'>Sem itens</div>"; return; }
+      el.innerHTML = itens.map(item => {
+        const pct = (item.nivel * 100).toFixed(0);
+        const cor = item.nivel <= item.minimo ? "var(--danger)" : item.nivel < 0.4 ? "var(--warn)" : "var(--accent2)";
+        return `
+          <div class="item-nivel">
+            <div class="barra-label">
+              <span>${item.nome}</span>
+              <span style="color:${cor}">${pct}%</span>
+            </div>
+            <div class="barra"><div class="barra-fill" style="width:${pct}%;background:${cor}"></div></div>
+          </div>`;
+      }).join("");
+    }
+
+    function renderHistorico(pontos) {
+      const el = document.getElementById("historico-content");
+      if (!pontos.length) { el.innerHTML="<div class='loading'>Sem histórico ainda</div>"; return; }
+
+      const campos = [
+        {key:"temperatura", label:"Temperatura (°C)", cor:"#ff6b6b"},
+        {key:"umidade",     label:"Umidade (%)",       cor:"#4ecdc4"},
+        {key:"consumo_w",   label:"Consumo (W)",       cor:"#ffe66d"},
+        {key:"conforto",    label:"Conforto (/100)",   cor:"#a8edea"},
+      ];
+
+      el.innerHTML = campos.map(c => {
+        const vals = pontos.map(p => p[c.key] || 0);
+        const vmin = Math.min(...vals).toFixed(1);
+        const vmax = Math.max(...vals).toFixed(1);
+        const atual = vals[vals.length-1].toFixed(1);
+        const pts = sparkPoints(vals, 500, 45);
+        return `
+          <div class="sparkline-wrap" style="margin-bottom:14px">
+            <div class="spark-label" style="display:flex;justify-content:space-between">
+              <span>${c.label}</span>
+              <span style="color:${c.cor}">${atual} (↓${vmin} ↑${vmax})</span>
+            </div>
+            <svg width="100%" height="45" viewBox="0 0 500 45" preserveAspectRatio="none"
+                 style="display:block;background:#0a0a20;border-radius:4px">
+              <polyline points="${pts}" fill="none" stroke="${c.cor}" stroke-width="1.5" opacity="0.9"/>
+              <linearGradient id="g${c.key}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="${c.cor}" stop-opacity="0.3"/>
+                <stop offset="100%" stop-color="${c.cor}" stop-opacity="0"/>
+              </linearGradient>
+              <polygon points="0,45 ${pts} ${500},45" fill="url(#g${c.key})"/>
+            </svg>
+          </div>`;
+      }).join("");
+    }
+
+    function sparkPoints(vals, w, h) {
+      if (!vals.length) return "";
+      const vmin = Math.min(...vals), vmax = Math.max(...vals);
+      const faixa = vmax - vmin || 1;
+      return vals.map((v, i) => {
+        const x = (i / (vals.length - 1)) * w;
+        const y = h - ((v - vmin) / faixa) * (h - 4) - 2;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(" ");
+    }
+
+    function renderGeo(geo) {
+      const el = document.getElementById("geo-content");
+      const zonas = geo.zonas || {};
+      const pos = geo.posicao;
+      let html = "";
+      if (pos) html += `<div style="font-size:0.78rem;color:var(--muted);margin-bottom:10px">📍 ${pos[0].toFixed(4)}, ${pos[1].toFixed(4)}</div>`;
+      if (!Object.keys(zonas).length) {
+        html += `<div class='loading'>Nenhuma zona configurada</div>`;
+      } else {
+        html += Object.entries(zonas).map(([nome, info]) => `
+          <div class="geo-zona">
+            <div class="geo-dot ${info.dentro ? 'inside' : ''}"></div>
+            <span>${nome}</span>
+            <span style="margin-left:auto;font-size:0.75rem;color:var(--muted)">${info.dentro ? "DENTRO" : "fora"} (r=${info.raio}m)</span>
+          </div>`).join("");
+      }
+      el.innerHTML = html;
+    }
+
+    // ── Ações ──
+    async function toggleDev(nome, ligar) {
+      await fetch("/api/casa/controlar", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({nome, ligado: ligar})
+      });
+      carregarTudo();
+    }
+
+    async function ativarPerfil(perfil) {
+      document.querySelectorAll(".perfil-btn").forEach(b => b.classList.remove("ativo"));
+      event.target.classList.add("ativo");
+      await fetch("/api/casa/perfil", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({perfil})
+      });
+      carregarTudo();
+    }
+
+    // Inicia
+    carregarTudo();
+  </script>
+</body>
+</html>
