@@ -338,3 +338,228 @@ def criar_roteador_smarthome(ac) -> Roteador:
     def _reboot_cel(p, m): return ac.celular_reiniciar()
 
     return r
+
+
+# ══════════════════════════════════════════════════════════════
+#  FÁBRICA DE ROTEADOR PARA ARDUINO
+# ══════════════════════════════════════════════════════════════
+def criar_roteador_arduino(ac) -> Roteador:
+    r = Roteador()
+
+    # ── Status e diagnóstico ──
+    @r.rota(qualquer(contem("arduino status", "status arduino", "arduino conectado"),
+                     exato("arduino")), prioridade=10)
+    def _status(p, m): return ac.arduino_status()
+
+    @r.rota(qualquer(contem("ping arduino"), exato("ping")), prioridade=9)
+    def _ping(p, m): return ac.ping_arduino()
+
+    @r.rota(contem("portas serial", "portas seriais", "lista portas"), prioridade=8)
+    def _portas(p, m): return ac.portas_serial()
+
+    @r.rota(contem("monitor serial", "le a serial", "serial monitor"), prioridade=8)
+    def _monitor(p, m):
+        nums = extrair_numeros(p)
+        return ac.monitor_serial(int(nums[0]) if nums else 5)
+
+    @r.rota(contem("scan i2c", "escaneia i2c", "dispositivos i2c"), prioridade=8)
+    def _i2c(p, m): return ac.arduino_scan_i2c()
+
+    # ── Firmware ──
+    @r.rota(contem("instala firmware", "instalar firmware", "firmware arduino",
+                   "firmware universal"), prioridade=9)
+    def _fw(p, m): return ac.instalar_firmware()
+
+    @r.rota(comeca("compila arduino", "compilar arduino"), prioridade=8)
+    def _compila(p, m):
+        arq = extrair_apos(p, "compila arduino", "compilar arduino")
+        return ac.arduino_compilar(arq) if arq else "Qual .ino? Ex: compila arduino blink.ino"
+
+    @r.rota(contem("grava arduino", "grava no arduino", "upload arduino",
+                   "envia pro arduino"), prioridade=8)
+    def _grava(p, m):
+        arq = extrair_apos(p, "grava no arduino", "grava arduino", "upload arduino",
+                           "envia pro arduino")
+        return ac.arduino_gravar(arq) if arq else "Qual .ino? Ex: grava arduino blink.ino"
+
+    @r.rota(comeca("codigo arduino", "gera codigo arduino", "cria sketch"), prioridade=7)
+    def _codigo(p, m):
+        desc = extrair_apos(p, "codigo arduino", "gera codigo arduino", "cria sketch")
+        return ac.gerar_codigo_arduino(desc or "piscar LED")
+
+    # ── LED / Relay / Pinos digitais ──
+    @r.rota(Padrao(lambda t: (
+        any(t.startswith(x) for x in ("liga led", "ligar led", "acende led", "acender led"))
+        and any(c.isdigit() for c in t)
+    )), prioridade=9)
+    def _led_on(p, m):
+        nums = extrair_inteiros(p)
+        return ac.led(nums[0] if nums else 13, True)
+
+    @r.rota(Padrao(lambda t: (
+        any(t.startswith(x) for x in ("desliga led", "desligar led", "apaga led", "apagar led"))
+        and any(c.isdigit() for c in t)
+    )), prioridade=9)
+    def _led_off(p, m):
+        nums = extrair_inteiros(p)
+        return ac.led(nums[0] if nums else 13, False)
+
+    @r.rota(contem("leds ", "multiplos leds", "varios leds"), prioridade=8)
+    def _leds(p, m):
+        ligar = "off" not in p and "desliga" not in p and "apaga" not in p
+        nums = extrair_inteiros(p)
+        return ac.arduino_leds_multiplos(nums, ligar) if nums else "Ex: liga leds 13,12,11"
+
+    @r.rota(contem("todos off", "apaga tudo arduino", "desliga tudo arduino"), prioridade=9)
+    def _todos_off(p, m): return ac.arduino_todos_off()
+
+    @r.rota(comeca("relay "), prioridade=8)
+    def _relay(p, m):
+        nums = extrair_inteiros(p)
+        ligar = "off" not in p and "desliga" not in p
+        return ac.arduino_relay(nums[0] if nums else 8, ligar)
+
+    @r.rota(comeca("pinmode ", "define pino ", "modo pino "), prioridade=7)
+    def _pinmode(p, m):
+        nums = extrair_inteiros(p)
+        modo = "I" if "input" in p or " i " in p else ("P" if "pullup" in p else "O")
+        return ac.arduino_pinmode(nums[0] if nums else 0, modo)
+
+    # ── PWM e Servo ──
+    @r.rota(comeca("pwm "), prioridade=8)
+    def _pwm(p, m):
+        nums = extrair_inteiros(p)
+        if len(nums) >= 2:
+            return ac.pwm(nums[0], nums[1])
+        return "Use: pwm [pino] [0-255]. Ex: pwm 5 200"
+
+    @r.rota(Padrao(lambda t:
+        t.startswith("servo") or t.startswith("gira servo") or t.startswith("girar servo")
+    ), prioridade=8)
+    def _servo(p, m):
+        nums = extrair_inteiros(p)
+        if not nums:
+            return "Quantos graus? Ex: servo 90 | servo 45 pino 10"
+        graus = nums[0]
+        pino = nums[1] if len(nums) > 1 and "pino" in p else 9
+        return ac.servo(graus, pino)
+
+    # ── Motor DC ──
+    @r.rota(comeca("motor "), prioridade=8)
+    def _motor(p, m):
+        nums = extrair_inteiros(p)
+        if len(nums) >= 3:
+            return ac.arduino_motor(nums[0], nums[1], nums[2])
+        if nums and ("para" in p or "stop" in p):
+            pA, pB = nums[0], (nums[1] if len(nums) > 1 else nums[0] + 1)
+            return ac.arduino_motor_parar(pA, pB)
+        return "Use: motor [pinoA] [pinoB] [vel -255..255]. Ex: motor 5 6 200"
+
+    @r.rota(contem("para motor", "stop motor", "freia motor"), prioridade=8)
+    def _motor_para(p, m):
+        nums = extrair_inteiros(p)
+        pA, pB = (nums[0], nums[1]) if len(nums) >= 2 else (5, 6)
+        return ac.arduino_motor_parar(pA, pB)
+
+    # ── Buzzer ──
+    @r.rota(contem("buzzer", "toca tom", "beep"), prioridade=8)
+    def _buzzer(p, m):
+        nums = extrair_inteiros(p)
+        pino = nums[0] if nums else 8
+        freq = nums[1] if len(nums) > 1 else 440
+        dur = nums[2] if len(nums) > 2 else 500
+        return ac.arduino_buzzer(pino, freq, dur)
+
+    @r.rota(contem("para buzzer", "stop buzzer", "silencia buzzer", "notone"), prioridade=8)
+    def _buzzer_para(p, m):
+        nums = extrair_inteiros(p)
+        return ac.arduino_buzzer_parar(nums[0] if nums else 8)
+
+    @r.rota(contem("bip ", "bipzinho", "apita"), prioridade=7)
+    def _bip(p, m):
+        nums = extrair_inteiros(p)
+        pino = nums[0] if nums else 8
+        reps = nums[1] if len(nums) > 1 else 1
+        return ac.arduino_bip(pino, reps)
+
+    # ── Sensores ──
+    @r.rota(Padrao(lambda t: (
+        (t.startswith("le sensor") or t.startswith("ler sensor") or t.startswith("lê sensor"))
+        and re.search(r"[ad]\s*\d{1,2}", t)
+    )), prioridade=9)
+    def _sensor(p, m):
+        s = re.search(r"[ad]\s*\d{1,2}", p)
+        return ac.ler_sensor(s.group(0).replace(" ", "")) if s else "Ex: le sensor a0"
+
+    @r.rota(contem("ultrassonico", "ultrassônico", "distancia sensor",
+                   "hc-sr04", "hcsr04"), prioridade=8)
+    def _ultra(p, m):
+        nums = extrair_inteiros(p)
+        trig = nums[0] if nums else 9
+        echo = nums[1] if len(nums) > 1 else 10
+        return ac.arduino_ultrassonico(trig, echo)
+
+    # ── Sequência de comandos ──
+    @r.rota(comeca("sequencia arduino", "sequencia de comandos arduino"), prioridade=7)
+    def _seq(p, m):
+        raw = extrair_apos(p, "sequencia arduino", "sequencia de comandos arduino")
+        cmds = [c.strip() for c in raw.split(",") if c.strip()]
+        return ac.arduino_sequencia(cmds) if cmds else "Ex: sequencia arduino LED 13 ON, PWM 5 128"
+
+    @r.rota(comeca("arduino "), prioridade=5)
+    def _raw(p, m):
+        cmd = extrair_apos(p, "arduino ")
+        return ac.arduino_enviar(cmd) if cmd else "Use: arduino [COMANDO]"
+
+    # ── Controle total de dispositivos da casa ──
+    @r.rota(contem("liga tudo", "ligar tudo", "acende tudo"), prioridade=10)
+    def _ligar_tudo(p, m): return ac.smarthome_ligar_tudo()
+
+    @r.rota(contem("desliga tudo", "desligar tudo", "apaga tudo", "apagar tudo"), prioridade=10)
+    def _desligar_tudo(p, m): return ac.smarthome_desligar_tudo()
+
+    @r.rota(Padrao(lambda t:
+        any(t.startswith(x) for x in ("toggle ", "alterna ")) and len(t) > 8
+    ), prioridade=9)
+    def _toggle(p, m):
+        nome = extrair_apos(p, "toggle", "alterna")
+        return ac.smarthome_toggle(nome)
+
+    _TIPOS_GRUPO = ("luz", "ar", "som", "tv", "tomada", "climatizacao", "sensor")
+
+    @r.rota(Padrao(lambda t: (
+        any(t.startswith(x) for x in ("liga todas ", "ligar todas ", "acende todas ",
+                                      "liga todos ", "ligar todos "))
+        and any(tp in t for tp in ("luz", "ar", "som", "tv", "tomada", "climatizacao", "sensor"))
+    )), prioridade=9)
+    def _liga_grupo(p, m):
+        tipo = extrair_apos(p, "liga todas", "ligar todas", "acende todas",
+                            "liga todos", "ligar todos", "as", "os")
+        return ac.smarthome_ligar_grupo(tipo.strip())
+
+    @r.rota(Padrao(lambda t: (
+        any(t.startswith(x) for x in ("desliga todas ", "desligar todas ", "apaga todas ",
+                                      "desliga todos ", "desligar todos "))
+        and any(tp in t for tp in ("luz", "ar", "som", "tv", "tomada", "climatizacao", "sensor"))
+    )), prioridade=9)
+    def _desliga_grupo(p, m):
+        tipo = extrair_apos(p, "desliga todas", "desligar todas", "apaga todas",
+                            "desliga todos", "desligar todos", "as", "os")
+        return ac.smarthome_desligar_grupo(tipo.strip())
+
+    @r.rota(Padrao(lambda t:
+        any(t.startswith(x) for x in ("cena ", "ativa cena ", "modo cena "))
+    ), prioridade=9)
+    def _cena(p, m):
+        nome = extrair_apos(p, "cena", "ativa cena", "modo cena")
+        return ac.smarthome_cena(nome)
+
+    @r.rota(contem("consumo detalhado", "consumo por dispositivo",
+                   "quanto consome cada"), prioridade=7)
+    def _consumo_det(p, m): return ac.smarthome_consumo_detalhado()
+
+    @r.rota(contem("lista todos dispositivos", "listar dispositivos", "todos os dispositivos",
+                   "ver todos dispositivos"), prioridade=7)
+    def _listar(p, m): return ac.smarthome_listar_todos()
+
+    return r

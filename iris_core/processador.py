@@ -5,7 +5,7 @@ import logging
 from .config import (CFG, CONFIG_PATH, GROQ_API_KEY, GEMINI_API_KEY,
     OPENWEATHER_KEY, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, ARDUINO_PORTA, ARDUINO_ATIVO,
     POCO_IP, CIDADE_PADRAO, MODELO_GROQ, MODELO_GEMINI)
-from .roteador import criar_roteador_smarthome
+from .roteador import criar_roteador_smarthome, criar_roteador_arduino
 
 
 # ══════════════════════════════════════════════════════════════
@@ -94,6 +94,7 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
         self.voz = voz
         self._pendente = None  # ação aguardando confirmação ou resposta do usuário
         self._roteador_smarthome = criar_roteador_smarthome(acoes)
+        self._roteador_arduino = criar_roteador_arduino(acoes)
 
     def _tratar_resultado(self, resultado):
         """Se o resultado for uma Pergunta, guarda o callback e retorna o texto."""
@@ -211,6 +212,11 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
                 self._pendente = ("restaurar_iris", pendente)
             return msg
 
+        # ── ARDUINO ──
+        _r = self._roteador_arduino.despachar(p)
+        if _r is not None:
+            return self._tratar_resultado(_r)
+
         # ── SMART HOME / BIO / SEGURANÇA / LOGÍSTICA / AGENTE ──
         _r = self._roteador_smarthome.despachar(p)
         if _r is not None:
@@ -250,38 +256,6 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
         if p in ("ditado", "modo ditado", "quero ditar", "vou ditar", "anota o que vou falar"):
             return self.ac.iniciar_ditado()
 
-        # ── ARDUINO DIRETO (v11) — exige firmware universal gravado ──
-        if any(x in p for x in ["instala firmware", "instalar firmware", "firmware arduino",
-                                "firmware universal"]):
-            return self.ac.instalar_firmware()
-        if p.startswith("servo") or p.startswith("gira servo") or p.startswith("girar servo"):
-            nums = [int(s) for s in re.findall(r"\d+", p)]
-            if not nums:
-                return "Quantos graus? Ex: servo 90 | servo 45 pino 10"
-            graus = nums[0]
-            pino = nums[1] if len(nums) > 1 and "pino" in p else 9
-            return self.ac.servo(graus, pino)
-        if (p.startswith("liga led") or p.startswith("ligar led") or
-                p.startswith("acende led") or p.startswith("acender led")):
-            nums = [int(s) for s in re.findall(r"\d+", p)]
-            return self.ac.led(nums[0] if nums else 13, True)
-        if (p.startswith("desliga led") or p.startswith("desligar led") or
-                p.startswith("apaga led") or p.startswith("apagar led")):
-            nums = [int(s) for s in re.findall(r"\d+", p)]
-            return self.ac.led(nums[0] if nums else 13, False)
-        if p.startswith("pwm"):
-            nums = [int(s) for s in re.findall(r"\d+", p)]
-            if len(nums) >= 2:
-                return self.ac.pwm(nums[0], nums[1])
-            return "Use: pwm [pino] [0-255]. Ex: pwm 5 200"
-        if p.startswith("le sensor") or p.startswith("ler sensor") or p.startswith("lê sensor"):
-            m = re.search(r"[ad]\s*\d{1,2}", p)
-            if m:
-                return self.ac.ler_sensor(m.group(0).replace(" ", ""))
-            return "Qual sensor? Ex: le sensor a0 | le sensor d7"
-        if "ping arduino" in p or p == "ping":
-            return self.ac.ping_arduino()
-
         # ── APAGAR PASTA — sempre pede confirmação (v11) ──
         if any(p.startswith(x) for x in ["apaga pasta", "apagar pasta", "deleta pasta",
                                          "deletar pasta", "remove pasta", "remover pasta"]):
@@ -312,12 +286,6 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
         r_plugin = self.ac.plugins.tentar(prompt)
         if r_plugin is not None:
             return r_plugin
-
-        # ── LUZ ──
-        if any(x in p for x in ["liga luz", "liga a luz", "acende a luz", "acende luz", "ligar luz"]):
-            return self.ac.luz(True)
-        if any(x in p for x in ["desliga luz", "apaga luz", "desligar luz"]):
-            return self.ac.luz(False)
 
         # ── MODO VIGIA ──
         if any(x in p for x in ["ativa vigia", "modo vigia", "ativa camera", "monitorar camera"]):
@@ -376,7 +344,7 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
             return self.ac.celular_ligar_tela(False)
         if any(x in p for x in ["notificacoes do celular", "notificações do celular"]):
             return self.ac.celular_notificacoes()
-        if any(x in p for x in ["reinicia o celular", "reiniciar celular", "reboot celular"]):
+        if any(x in p for x in ["reinicia o celular"]):
             return self.ac.celular_reiniciar()
         if any(x in p for x in ["limpa cache do celular", "limpar cache celular"]):
             return self.ac.celular_limpar_cache()
@@ -673,24 +641,6 @@ executa codigo isolado [codigo] | tool use [tarefa]"""
                 except Exception as e:
                     return "Não consegui calcular: " + str(e)
             return "Me dá uma conta válida! Ex: calcula (15*8)+sqrt(144)"
-
-        # ── ARDUINO REAL (v9.0) ──
-        if any(x in p for x in ["portas serial", "portas seriais", "lista portas"]):
-            return self.ac.portas_serial()
-        if any(x in p for x in ["monitor serial", "le a serial", "lê a serial", "serial monitor"]):
-            nums = [int(s) for s in p.split() if s.isdigit()]
-            return self.ac.monitor_serial(nums[0] if nums else 5)
-        if p.startswith("compila arduino") or p.startswith("compilar arduino"):
-            arq = p.replace("compilar arduino", "").replace("compila arduino", "").strip()
-            return self.ac.arduino_compilar(arq) if arq else "Qual .ino? Ex: compila arduino blink.ino"
-        if any(x in p for x in ["grava arduino", "grava no arduino", "upload arduino", "envia pro arduino"]):
-            arq = p
-            for w in ["grava no arduino", "grava arduino", "upload arduino", "envia pro arduino"]:
-                arq = arq.replace(w, "")
-            arq = arq.strip()
-            return self.ac.arduino_gravar(arq) if arq else "Qual .ino? Ex: grava arduino blink.ino"
-        if p.startswith("arduino "):
-            return self.ac.arduino_enviar(prompt.strip()[8:])
 
         # ── SISTEMA ──
         if any(x in p for x in ["status", "como esta o sistema"]) or p in ("cpu", "ram", "memoria"):

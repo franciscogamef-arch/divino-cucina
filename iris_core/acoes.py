@@ -22,6 +22,7 @@ from .sensores_historico import SeriesTempo, ColetorSensores, GraficoASCII
 from .modulos.smarthome_mixin import SmartHomeMixin
 from .modulos.github_mixin import GithubMixin
 from .modulos.celular_mixin import CelularMixin
+from .modulos.arduino_mixin import ArduinoMixin
 from .tipos import Pergunta  # re-exportado; use `from iris_core.tipos import Pergunta` nos mixins
 
 _FALLBACK_HTML = """<!doctype html><html><head><meta charset=utf-8>
@@ -59,7 +60,7 @@ refresh();setInterval(refresh,10000);
 # ══════════════════════════════════════════════════════════════
 #  AÇÕES — tudo que a IRIS pode fazer no sistema
 # ══════════════════════════════════════════════════════════════
-class Acoes(SmartHomeMixin, GithubMixin, CelularMixin):
+class Acoes(SmartHomeMixin, GithubMixin, CelularMixin, ArduinoMixin):
     def __init__(self, usuario, memoria, ia):
         self.usuario = usuario
         self.mem = memoria
@@ -93,7 +94,6 @@ class Acoes(SmartHomeMixin, GithubMixin, CelularMixin):
         self._coletor = ColetorSensores(self._series_tempo, self.smarthome)
         self._coletor.iniciar()
         threading.Thread(target=self._checar_lembretes, daemon=True).start()
-        self._iniciar_arduino()
 
     def _notif_logistica(self, titulo: str, msg: str):
         self.notificar(titulo, msg)
@@ -123,27 +123,6 @@ class Acoes(SmartHomeMixin, GithubMixin, CelularMixin):
             lambda perfil: sh.ajuste.aplicar_perfil(perfil)
         )
 
-    # ── ARDUINO (serial) ──
-    def _iniciar_arduino(self):
-        if not ARDUINO_ATIVO:
-            return
-        try:
-            import serial
-            self._arduino = serial.Serial(ARDUINO_PORTA, 9600, timeout=1)
-        except Exception as _e:
-            logging.exception(_e)
-
-    def _arduino_cmd(self, cmd):
-        if not self._arduino:
-            return None
-        try:
-            self._arduino.write((cmd + "\n").encode())
-            time.sleep(0.5)
-            return self._arduino.readline().decode().strip()
-        except Exception as _e:
-            logging.exception(_e)
-            return None
-
     def _reg(self, info):
         self.mem.registrar(info)
 
@@ -154,16 +133,6 @@ class Acoes(SmartHomeMixin, GithubMixin, CelularMixin):
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as _e:
             logging.exception(_e)
-
-    # ── LUZ ──
-    def luz(self, ligar):
-        txt = "ligada" if ligar else "apagada"
-        if ARDUINO_ATIVO:
-            r = self._arduino_cmd("LUZ_ON" if ligar else "LUZ_OFF")
-            self._reg("Luz " + txt + " via Arduino")
-            return "Luz " + txt + "! Arduino: " + str(r)
-        self._reg("Luz " + txt + " (simulado)")
-        return "Luz " + txt + "! (Conecte o Arduino para valer de verdade)"
 
     # ── SISTEMA ──
     def status(self, mon):

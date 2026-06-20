@@ -216,6 +216,122 @@ class SmartHomeMixin:
         return self.logistica.tarifas.proximo_horario_barato()
 
     # ══════════════════════════════════════════════════════════════
+    #  CONTROLE TOTAL / GRUPO / CENAS
+    # ══════════════════════════════════════════════════════════════
+    def smarthome_ligar_tudo(self) -> str:
+        self._reg("Liga TODOS os dispositivos")
+        devs = self.smarthome.dispositivos
+        for d in devs.values():
+            d.ligado = True
+        self.smarthome.salvar()
+        nomes = ", ".join(devs.keys()) or "nenhum"
+        return f"TODOS ligados ({len(devs)}): {nomes}"
+
+    def smarthome_desligar_tudo(self) -> "Pergunta":
+        self._reg("Solicitado desligar TUDO")
+        _SIM = {"sim", "s", "confirmo", "confirma", "pode", "pode sim", "isso"}
+        return Pergunta(
+            "Confirma desligar TODOS os dispositivos da casa? (sim / não)",
+            lambda r: self._smarthome_desligar_exec()
+                      if r.strip().lower() in _SIM
+                      else "Cancelado. Dispositivos continuam ligados."
+        )
+
+    def _smarthome_desligar_exec(self) -> str:
+        devs = self.smarthome.dispositivos
+        for d in devs.values():
+            d.ligado = False
+        self.smarthome.salvar()
+        return f"TODOS desligados ({len(devs)} dispositivos)"
+
+    def smarthome_toggle(self, nome: str) -> str:
+        self._reg(f"Toggle: {nome}")
+        alvo = next((d for n, d in self.smarthome.dispositivos.items()
+                     if nome.lower() in n.lower()), None)
+        if not alvo:
+            return f"Dispositivo '{nome}' não encontrado"
+        alvo.ligado = not alvo.ligado
+        self.smarthome.salvar()
+        return f"{alvo.nome}: {'ligado' if alvo.ligado else 'desligado'} (toggle)"
+
+    def smarthome_ligar_grupo(self, tipo: str) -> str:
+        self._reg(f"Liga grupo: {tipo}")
+        afetados = []
+        for d in self.smarthome.dispositivos.values():
+            if tipo.lower() in d.tipo.lower() or tipo.lower() in d.nome.lower():
+                d.ligado = True
+                afetados.append(d.nome)
+        self.smarthome.salvar()
+        if not afetados:
+            return f"Nenhum dispositivo do tipo '{tipo}' encontrado"
+        return f"Ligados ({tipo}): " + ", ".join(afetados)
+
+    def smarthome_desligar_grupo(self, tipo: str) -> str:
+        self._reg(f"Desliga grupo: {tipo}")
+        afetados = []
+        for d in self.smarthome.dispositivos.values():
+            if tipo.lower() in d.tipo.lower() or tipo.lower() in d.nome.lower():
+                d.ligado = False
+                afetados.append(d.nome)
+        self.smarthome.salvar()
+        if not afetados:
+            return f"Nenhum dispositivo do tipo '{tipo}' encontrado"
+        return f"Desligados ({tipo}): " + ", ".join(afetados)
+
+    def smarthome_cena(self, nome: str) -> str:
+        """Ativa cenas predefinidas com configurações específicas por dispositivo."""
+        self._reg(f"Cena: {nome}")
+        cenas = {
+            "cinema": {"tv": (True, 100), "som": (True, 70), "luz": (False, 0), "climatizacao": (True, 22)},
+            "jantar": {"luz": (True, 60), "som": (True, 30), "tv": (False, 0), "climatizacao": (True, 24)},
+            "dormir": {"luz": (False, 0), "som": (False, 0), "tv": (False, 0), "climatizacao": (True, 22)},
+            "festa": {"luz": (True, 100), "som": (True, 90), "tv": (True, 80)},
+            "trabalho": {"luz": (True, 90), "som": (False, 0), "climatizacao": (True, 21)},
+            "relaxar": {"luz": (True, 40), "som": (True, 40), "climatizacao": (True, 23)},
+        }
+        n = nome.lower().replace("ç", "c").replace("ã", "a")
+        cfg = cenas.get(n)
+        if not cfg:
+            return f"Cena '{nome}' não existe. Disponíveis: {', '.join(cenas)}"
+        alterados = []
+        for d in self.smarthome.dispositivos.values():
+            for tipo_alvo, (ligar, val) in cfg.items():
+                if tipo_alvo in d.tipo.lower():
+                    d.ligado = ligar
+                    if val > 0:
+                        d.valor = float(val)
+                    alterados.append(f"{d.nome}={'ON' if ligar else 'OFF'}")
+        self.smarthome.salvar()
+        return f"Cena '{nome}' ativada:\n" + "\n".join(f"  • {a}" for a in alterados)
+
+    def smarthome_consumo_detalhado(self) -> str:
+        self._reg("Consumo detalhado")
+        linhas = ["CONSUMO POR DISPOSITIVO:"]
+        total = 0.0
+        consumos = {"luz": 10, "climatizacao": 1500, "som": 50, "tv": 120, "tomada": 100, "sensor": 2}
+        for d in self.smarthome.dispositivos.values():
+            w = consumos.get(d.tipo, 50) * (d.valor / 100 if d.valor > 0 else 1) if d.ligado else 0
+            total += w
+            estado = f"{w:.0f}W" if d.ligado else "off"
+            linhas.append(f"  {'ON' if d.ligado else '  '} {d.nome:<22} {estado}")
+        linhas.append(f"\nTotal: {total:.0f}W  ({total * 24 / 1000:.2f} kWh/dia)")
+        return "\n".join(linhas)
+
+    def smarthome_listar_todos(self) -> str:
+        self._reg("Lista todos os dispositivos")
+        devs = self.smarthome.dispositivos
+        if not devs:
+            return "Nenhum dispositivo cadastrado. Use: cadastrar dispositivo"
+        ligados = sum(1 for d in devs.values() if d.ligado)
+        linhas = [f"DISPOSITIVOS ({len(devs)} total, {ligados} ligados):"]
+        for d in devs.values():
+            icone = {"luz": "💡", "climatizacao": "❄️", "som": "🔊",
+                     "tomada": "🔌", "sensor": "📡", "tv": "📺"}.get(d.tipo, "•")
+            val = f" {d.valor:.0f}%" if d.valor > 0 else ""
+            linhas.append(f"  {icone} {'[ON]' if d.ligado else '[off]'} {d.nome}{val} ({d.tipo})")
+        return "\n".join(linhas)
+
+    # ══════════════════════════════════════════════════════════════
     #  HISTÓRICO DE SENSORES
     # ══════════════════════════════════════════════════════════════
     def historico_sensores_painel(self, horas: float = 6.0) -> str:
